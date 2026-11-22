@@ -52,7 +52,6 @@ const MONITRC: &[u8] = include_bytes!(concat!(env!("UNFR0ZEN_ROOT"), "/crates/ne
 /// The stock files the overlay edits, as the unit has them.
 /// nestlocal's options; present once nestlocal is installed.
 pub const OPTIONS: &str = "etc/nestlocal/options";
-pub const BLE_FIRMWARE: &str = "usr/share/dialog/data/firmware/nl_ble_peripheral_app_firmware.bin";
 pub const STOCK_FILES: [&str; 6] = [
     "etc/init.d/rcS",
     "etc/monitrc",
@@ -184,7 +183,10 @@ impl Matter {
     }
 
     fn flags(&self) -> String {
-        format!(" -matter -matter-passcode {} -matter-discriminator {}", self.passcode, self.discriminator)
+        format!(
+            " -matter -matter-passcode {} -matter-discriminator {} -matter-ip-only",
+            self.passcode, self.discriminator
+        )
     }
 }
 
@@ -358,29 +360,21 @@ pub fn edit_product_config(text: &str) -> Result<String> {
 const MATTER_BLE_MARKER: &str = "\n<!-- unfr0zen owns BLE for Matter; original ble_disabled=0 -->";
 const SENSOR_BLE_MARKER: &str = "\n<!-- unfr0zen turned BLE on for the stand-in sensor; original ble_disabled=1 -->";
 
-fn configure_matter_ble(mut text: String, enabled: bool, firmware: Option<&[u8]>) -> String {
+fn restore_stock_ble(mut text: String) -> String {
     if text.contains(SENSOR_BLE_MARKER) {
         text = text
             .replace("key=\"ble_disabled\" value=\"0\"", "key=\"ble_disabled\" value=\"1\"")
             .replace(SENSOR_BLE_MARKER, "");
     }
-    if !enabled && text.contains(MATTER_BLE_MARKER) {
+    if text.contains(MATTER_BLE_MARKER) {
         return text
             .replace("key=\"ble_disabled\" value=\"1\"", "key=\"ble_disabled\" value=\"0\"")
             .replace(MATTER_BLE_MARKER, "");
-    }
-    let supported = firmware.is_some_and(|data| {
-        crate::shell::sha256_hex(data) == "f1a8be89252e1fab8d15f8e060ef5d74e7c60944b5ed4100d31f2eb4f4850315"
-    });
-    if enabled && supported && text.matches("key=\"ble_disabled\" value=\"0\"").count() == 1 {
-        text = text.replace("key=\"ble_disabled\" value=\"0\"", "key=\"ble_disabled\" value=\"1\"");
-        text.push_str(MATTER_BLE_MARKER);
     }
     text
 }
 
 /// nlclient's own BLE on, for nestlocal's stand-in sensor to stand behind.
-/// nestlocal keeps the chip itself, for Matter too, on the chip's own UART.
 /// A unit that had it off gets it back when a run leaves the sensor out.
 pub fn stock_ble_on(text: &str) -> String {
     let was_off = text.contains("key=\"ble_disabled\" value=\"1\"") && !text.contains(MATTER_BLE_MARKER);
@@ -578,11 +572,7 @@ pub fn overlay(
         }
     };
     let (options, secrets) = options(mqtt, matter, zigbee, name)?;
-    let product = configure_matter_ble(
-        edit_product_config(&text("etc/nestlabs/product.config")?)?,
-        matter.is_some(),
-        stock(BLE_FIRMWARE).map(|(data, _)| data).as_deref(),
-    );
+    let product = restore_stock_ble(edit_product_config(&text("etc/nestlabs/product.config")?)?);
     let mut files = vec![
         ("nestlabs/sbin/nestlocal".to_string(), 0o755, binary),
         ("etc/nestlocal/server.crt".to_string(), 0o644, pki.server_crt.clone()),
@@ -697,10 +687,13 @@ mod tests {
         assert_eq!(line(Some(&mqtt), None), "-mqtt tcp://broker:1883\n");
         assert_eq!(
             line(Some(&mqtt), Some(&matter)),
-            "-mqtt tcp://broker:1883 -matter -matter-passcode 34970112 -matter-discriminator 1234\n"
+            "-mqtt tcp://broker:1883 -matter -matter-passcode 34970112 -matter-discriminator 1234 -matter-ip-only\n"
         );
         // Matter alone: no broker at all, not nestlocal's default one.
-        assert_eq!(line(None, Some(&matter)), "-mqtt= -matter -matter-passcode 34970112 -matter-discriminator 1234\n");
+        assert_eq!(
+            line(None, Some(&matter)),
+            "-mqtt= -matter -matter-passcode 34970112 -matter-discriminator 1234 -matter-ip-only\n"
+        );
         assert_eq!(
             String::from_utf8(options(Some(&mqtt), None, true, None).unwrap().0).unwrap(),
             "-mqtt tcp://broker:1883 -zigbee\n"
@@ -745,24 +738,13 @@ mod tests {
     }
 
     #[test]
-    fn matter_ble_preserves_unknown_firmware_and_user_disabled_radio() {
-        for value in [0, 1] {
-            let config = format!("<config><a key=\"ble_disabled\" value=\"{value}\"/></config>\n");
-            assert_eq!(configure_matter_ble(config.clone(), true, None), config);
-            assert_eq!(configure_matter_ble(config.clone(), true, Some(b"unknown")), config);
-            assert_eq!(configure_matter_ble(config.clone(), false, None), config);
-        }
-    }
-
-    #[test]
-    #[ignore = "requires NEST_BLE_FIRMWARE pointing to the stock peripheral image"]
-    fn matter_ble_ownership_is_repeatable_and_reversible() {
-        let firmware = std::fs::read(std::env::var("NEST_BLE_FIRMWARE").unwrap()).unwrap();
-        let original = "<config><a key=\"ble_disabled\" value=\"0\"/></config>\n";
-        let configured = configure_matter_ble(original.into(), true, Some(&firmware));
-        assert!(configured.contains("key=\"ble_disabled\" value=\"1\""));
-        assert_eq!(configure_matter_ble(configured.clone(), true, Some(&firmware)), configured);
-        assert_eq!(configure_matter_ble(configured, false, None), original);
+    fn setup_restores_stock_bluetooth_settings_from_older_installs() {
+        let enabled = "<a key=\"ble_disabled\" value=\"0\"/>\n";
+        let disabled = "<a key=\"ble_disabled\" value=\"1\"/>\n";
+        assert_eq!(restore_stock_ble(enabled.into()), enabled);
+        assert_eq!(restore_stock_ble(disabled.into()), disabled);
+        assert_eq!(restore_stock_ble(format!("{disabled}{MATTER_BLE_MARKER}")), enabled);
+        assert_eq!(restore_stock_ble(format!("{enabled}{SENSOR_BLE_MARKER}")), disabled);
     }
 
     #[test]

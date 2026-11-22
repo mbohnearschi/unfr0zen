@@ -764,9 +764,6 @@ pub fn set_up_owned(
     {
         fetch(volume, &mut tree, &mut originals, &nestlocal::STOCK_FILES, true, true)?;
         fetch(volume, &mut tree, &mut originals, &[nestlocal::UNLOCK_BUNDLE], false, true)?;
-        if options.matter.is_some() {
-            fetch(volume, &mut tree, &mut originals, &[nestlocal::BLE_FIRMWARE], false, true)?;
-        }
         fetch(
             volume,
             &mut tree,
@@ -1923,6 +1920,24 @@ mod tests {
         assert!(!volume.text("etc/nestlabs/product.config").contains("key=\"ble_disabled\" value=\"1\""));
         set_up(&mut volume, &Options { external_temperature: false, ..options }, false).unwrap();
         assert!(!volume.text(nestlocal::OPTIONS).contains("external-temperature"));
+    }
+
+    #[test]
+    fn matter_defaults_to_ip_and_restores_nests_bluetooth_after_reinstall() {
+        let pki = nestlocal::generate_pki().unwrap();
+        let mut volume = nestlocal_unit(Some(&pki));
+        let product = "etc/nestlabs/product.config";
+        let legacy_ble =
+            b"<a key=\"ble_disabled\" value=\"1\"/>\n\n<!-- unfr0zen owns BLE for Matter; original ble_disabled=0 -->";
+        volume.files.get_mut(product).unwrap().2.extend_from_slice(legacy_ble);
+        let matter = Matter::from_pairing_code(nestlocal::DEFAULT_MATTER_CODE).unwrap();
+        let options = Options { matter: Some(matter), ..options() };
+
+        set_up(&mut volume, &options, false).unwrap();
+        assert!(volume.text(nestlocal::OPTIONS).trim_end().ends_with(" -matter-ip-only"));
+        assert!(volume.text(product).contains("key=\"ble_disabled\" value=\"0\""));
+        assert!(!volume.text(product).contains("unfr0zen owns BLE for Matter"));
+        assert!(set_up(&mut volume, &options, false).unwrap().is_empty());
     }
 
     #[test]

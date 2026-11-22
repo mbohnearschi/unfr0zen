@@ -30,6 +30,7 @@ const FLAGS: &[(&str, Kind, &str, &str)] = &[
     ("listen", Kind::Text, "127.0.0.1:443", "HTTPS address nlclient's cloudregisterurl points at"),
     ("matter", Kind::Bool, "false", "serve the thermostat over Matter too (matter/)"),
     ("matter-discriminator", Kind::Text, "3840", "Matter discriminator, 0-4095"),
+    ("matter-ip-only", Kind::Bool, "false", "commission Matter over IP without taking over Bluetooth for Matter"),
     ("matter-passcode", Kind::Text, "20202021", "Matter setup passcode"),
     ("matter-store", Kind::Text, "/media/data/nestlocal-matter", "where the Matter commissioning is kept"),
     ("matter-thread", Kind::Bool, "false", "Matter Thread network commissioning through the onboard radio"),
@@ -73,6 +74,7 @@ pub struct Config {
     pub log_file: String,
     pub matter: bool,
     pub matter_discriminator: u16,
+    pub matter_ip_only: bool,
     pub matter_passcode: u32,
     pub matter_store: String,
     pub matter_thread: bool,
@@ -253,6 +255,7 @@ pub fn parse(args: &[String]) -> Result<Config, Option<String>> {
         log_file: get("log-file"),
         matter: flag("matter") || flag("matter-thread"),
         matter_discriminator,
+        matter_ip_only: flag("matter-ip-only"),
         matter_passcode,
         matter_store: get("matter-store"),
         matter_thread: flag("matter-thread"),
@@ -356,6 +359,8 @@ mod tests {
         assert_eq!((c.matter_passcode, c.matter_discriminator), (20202021, 3840));
         assert!(parse(&args("-matter-passcode 12345678")).is_err());
         assert!(parse(&args("-matter-discriminator 4096")).is_err());
+        let c = parse(&args("-matter -matter-ip-only -matter-thread")).unwrap();
+        assert!(c.matter && c.matter_ip_only && c.matter_thread);
     }
 
     #[test]

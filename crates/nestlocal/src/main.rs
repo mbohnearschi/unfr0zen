@@ -54,7 +54,7 @@ const NLCLIENT_MAY_START: &str = "nlclient-may-start";
 /// loads firmware into the chip as it starts, so it must find the stand-in.
 #[cfg(target_os = "linux")]
 fn matter_takes_ble(config: &flags::Config) -> bool {
-    config.matter && sensor::port::stock_ble_off().unwrap_or(false)
+    config.matter && !config.matter_ip_only && sensor::port::stock_ble_off().unwrap_or(false)
 }
 
 /// rustls's cryptography: ring, for the server and the broker alike.
@@ -235,7 +235,7 @@ fn start_sensor(config: &flags::Config, store: &Arc<store::Store>) -> Option<Arc
     #[cfg(target_os = "linux")]
     {
         let result = match device.ble.as_ref() {
-            Some(ble) => sensor::port::start(Some(sensor.clone()), ble, config.matter),
+            Some(ble) => sensor::port::start(Some(sensor.clone()), ble, config.matter && !config.matter_ip_only),
             None => sensor::socket::start(sensor.clone(), store.clone(), config.serial.clone()),
         };
         if let Err(e) = result {
@@ -369,6 +369,7 @@ async fn run(config: flags::Config) {
             discriminator: config.matter_discriminator,
             storage: config.matter_store.clone().into(),
             thread: config.matter_thread,
+            ip_only: config.matter_ip_only,
         };
         matter::start(settings, bridge);
     }

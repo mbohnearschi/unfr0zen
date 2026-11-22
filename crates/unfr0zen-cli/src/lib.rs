@@ -87,7 +87,7 @@ struct Args {
     /// the thermostat's name in Home Assistant (--mqtt) and Matter controllers, e.g. "Nest FamRm", at most 32 characters; <serial> stands for the unit's serial (default: the unit's, at first "Nest Thermostat")
     #[arg(long, value_name = "NAME", help_heading = "Root filesystem options")]
     device_name: Option<String>,
-    /// serve the unit over Matter, with or without --mqtt; gen 3 turns off its own Bluetooth for Matter, so real Nest Temperature Sensors stop working
+    /// serve the unit over Matter with on-network pairing, with or without --mqtt
     #[arg(long, help_heading = "Root filesystem options")]
     matter: bool,
     /// Matter pairing code to enter on the phone, 11 digits (implies --matter; default: 0347-100-5534)

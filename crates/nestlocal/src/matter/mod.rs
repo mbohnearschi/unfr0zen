@@ -100,6 +100,8 @@ pub struct Settings {
     pub storage: PathBuf,
     /// Enables Thread network commissioning and SRP alongside Wi-Fi discovery.
     pub thread: bool,
+    /// Commission over IP and leave Bluetooth available for Nest sensors.
+    pub ip_only: bool,
 }
 
 /// A passcode Matter accepts: 1 to 99999998, none of the trivial ones.
@@ -407,6 +409,9 @@ fn run_network<N: Networks, C: NetCtl + NetCtlStatus + ThreadDiag + NetChangeNot
         )
     };
     let mut transport = pin!(async {
+        if settings.ip_only {
+            return matter.run(&crypto, network(), network(), &socket).await;
+        }
         match embassy_futures::select::select(
             matter.run(&crypto, network(), network(), &socket),
             ble::run(&matter, &comm, &btp, info.serial_no),
