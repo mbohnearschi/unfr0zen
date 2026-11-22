@@ -249,7 +249,21 @@ fn start_sensor(config: &flags::Config, store: &Arc<store::Store>) -> Option<Arc
 async fn run(config: flags::Config) {
     logf!("nestlocal: on a {}", device::current().name);
     let store = store::Store::new(&config.state);
-    structure::ensure_structure(&store, &config.serial);
+    let stock_room_sensors = device::current().ble.is_some() && !config.external_temperature;
+    let stock_settings = if stock_room_sensors { std::fs::read(&config.settings).ok() } else { None };
+    structure::ensure_structure(
+        &store,
+        &config.serial,
+        stock_settings.as_deref().and_then(sensor::room_sensors::saved_structure),
+    );
+    if let Some(settings) = &stock_settings {
+        sensor::room_sensors::seed_registry(
+            &store,
+            &config.serial,
+            settings,
+            sensor::room_sensors::read_manager().as_ref(),
+        );
+    }
     tokio::spawn(store.clone().save_changes());
     let sensor = start_sensor(&config, &store);
     #[cfg(target_os = "linux")]
@@ -347,6 +361,9 @@ async fn run(config: flags::Config) {
     }
     if let Err(e) = settings_ui::init(config.matter, config.zigbee, config.doom, config.themes) {
         logf!("settings UI: {e}");
+    }
+    if stock_room_sensors {
+        tokio::spawn(sensor::room_sensors::publish(store.clone(), config.serial.clone(), config.settings.clone()));
     }
     if device::current().name == "diamond3" {
         scratch::check();

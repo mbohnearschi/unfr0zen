@@ -13,6 +13,7 @@ enum custom_page {
     CUSTOM_MATTER_CONFIRM,
     CUSTOM_DOOM,
     CUSTOM_THEMES,
+    CUSTOM_ROOM_SENSORS,
 };
 
 /* The settings menu's entries, each a stock screen whose factory builds
@@ -26,7 +27,8 @@ static inline int custom_same(const char *a, const char *b) {
     return *a == *b;
 }
 static inline enum custom_page custom_root(const char *name) {
-    return custom_same(name, "account")         ? CUSTOM_ZIGBEE
+    return custom_same(name, "roomsensors")     ? CUSTOM_ROOM_SENSORS
+           : custom_same(name, "account")       ? CUSTOM_ZIGBEE
            : custom_same(name, "update")        ? CUSTOM_MATTER
            : custom_same(name, "proinfoscreen") ? CUSTOM_THEMES
            : custom_same(name, "templock")      ? CUSTOM_DOOM
@@ -140,8 +142,7 @@ static int custom_choose(struct custom_flow *flow, int choice, int (*request)(in
     if (choice < 0 || choice > (flow->page == CUSTOM_THEMES ? flow->theme_count : CHOICE_ROWS - 1))
         return CHOOSE_STAY;
     flow->action_failed = 0;
-    if (flow->page == CUSTOM_HOME) {
-        /* Done. */
+    if (flow->page == CUSTOM_HOME || flow->page == CUSTOM_ROOM_SENSORS) {
         if (choice == 0)
             return CHOOSE_EXIT;
     } else if (flow->page == CUSTOM_THEMES) {

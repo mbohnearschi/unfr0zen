@@ -310,6 +310,7 @@ struct custom_state {
     char status[96];
     char code[32];
     char detail[192];
+    char room_sensors[1024];
     enum custom_page image_page;
     void *activity_images[ACTIVITY_FRAMES];
     unsigned int activity_ticks;
@@ -981,6 +982,9 @@ static void load_activity(void *raw) {
 static void read_status(enum custom_page page, char *out, unsigned int size) {
     read_text(custom_matter(page) ? MATTER_STATUS : ZIGBEE_STATUS, out, size, NOT_ENABLED);
 }
+static void read_room_sensors(char *out, unsigned int size) {
+    read_text(RUN "room-sensors.txt", out, size, "Room sensor status unavailable");
+}
 /* Blanks choice rows `from` on. */
 static void clear_choices(struct custom_state *s, int from) {
     for (int i = from; i < CHOICE_ROWS; i++)
@@ -994,7 +998,8 @@ static void show(void *raw, int opening) {
     int old_selection = WORD(common(raw), COMMON_SELECTION);
     struct custom_state *s = state(raw);
     int doom = s->flow.page == CUSTOM_DOOM, theme = s->flow.page == CUSTOM_THEMES;
-    if (s->flow.page != CUSTOM_HOME && !doom && !theme) {
+    int room = s->flow.page == CUSTOM_ROOM_SENSORS;
+    if (s->flow.page != CUSTOM_HOME && !doom && !theme && !room) {
         read_status(s->flow.page, s->status, sizeof(s->status));
         if (s->flow.page == CUSTOM_MATTER && !s->flow.action_failed &&
             custom_matter_refresh(&s->flow, s->status, 0, &s->activity_started, 0))
@@ -1008,7 +1013,7 @@ static void show(void *raw, int opening) {
     choices_capacity(s, theme && s->themes.count + 1 > CHOICE_ROWS ? s->themes.count + 1 : CHOICE_ROWS);
     int activity = custom_activity(s->flow.page);
     int matter_pairing = s->flow.page == CUSTOM_MATTER_PAIRING;
-    int choice_count = s->flow.page == CUSTOM_HOME ? 1 : theme ? s->themes.count + 1 : activity ? 1 : 2;
+    int choice_count = s->flow.page == CUSTOM_HOME || room ? 1 : theme ? s->themes.count + 1 : activity ? 1 : 2;
     s->flags[0] = s->flags[1] = s->flags[2] = 0;
     s->config.text_count = activity ? 3 : 2;
     /* Text row 0 reserves the image's room in blank lines, so images
@@ -1025,6 +1030,13 @@ static void show(void *raw, int opening) {
         read_text("/etc/unfr0zen/version", name, sizeof(name), "unfr0zen");
         native_string_copy(&s->text[1], name);
         native_string_copy(&s->choices[0], "Done");
+        clear_choices(s, 1);
+    } else if (room) {
+        read_room_sensors(s->room_sensors, sizeof(s->room_sensors));
+        native_string_copy(&s->text[0], s->room_sensors);
+        native_string_copy(&s->text[1], "");
+        native_string_copy(&s->choices[0], "Back");
+        s->config.text_count = 1;
         clear_choices(s, 1);
     } else if (theme) {
         native_string_copy(&s->text[0], s->flow.action_failed ? "nestlocal is unavailable. Try again."
@@ -1134,6 +1146,13 @@ static int click(void *raw) {
  * timeout, and lays the page out again when it changed. */
 static void refresh_status(void *raw) {
     struct custom_state *s = state(raw);
+    if (s->flow.page == CUSTOM_ROOM_SENSORS) {
+        char text[sizeof(s->room_sensors)];
+        read_room_sensors(text, sizeof(text));
+        if (!same_text(text, s->room_sensors))
+            show(raw, 0);
+        return;
+    }
     if (s->flow.page == CUSTOM_HOME || s->flow.page == CUSTOM_ZIGBEE_CONFIRM || s->flow.page == CUSTOM_MATTER_CONFIRM ||
         s->flow.page == CUSTOM_DOOM || s->flow.page == CUSTOM_THEMES)
         return;
@@ -1316,13 +1335,21 @@ static int draw(void *raw, void *context) {
     return 0;
 }
 static int draw_common(void *base, void *context) { return draw((u8 *)base - COMMON_OFFSET, context); }
+/* Keep the additional title out of the compiler's table of absolute pointers. */
+static __attribute__((noinline)) void integration_title(nl_string *heading, enum custom_page root) {
+    native_string_copy(heading, root == CUSTOM_ZIGBEE   ? "\nZIGBEE"
+                                : root == CUSTOM_MATTER ? "\nMATTER"
+                                : root == CUSTOM_THEMES ? "\nTHEMES"
+                                : root == CUSTOM_DOOM   ? "\nDOOM"
+                                                        : "\nUNFR0ZEN");
+}
 static void title(void *screen) {
     enum custom_page root = state(raw_layer(screen))->flow.root;
-    native_string_copy((nl_string *)((u8 *)screen + SCREEN_TITLE), root == CUSTOM_ZIGBEE   ? "\nZIGBEE"
-                                                                   : root == CUSTOM_MATTER ? "\nMATTER"
-                                                                   : root == CUSTOM_THEMES ? "\nTHEMES"
-                                                                   : root == CUSTOM_DOOM   ? "\nDOOM"
-                                                                                           : "\nUNFR0ZEN");
+    nl_string *heading = (nl_string *)((u8 *)screen + SCREEN_TITLE);
+    if (root == CUSTOM_ROOM_SENSORS)
+        native_string_copy(heading, "\nROOM SENSORS");
+    else
+        integration_title(heading, root);
     native_string_copy((nl_string *)((u8 *)screen + SCREEN_SUBTITLE), "");
     native_rebuild_title(screen);
 }
@@ -1348,10 +1375,10 @@ static void subtitle_text(void *context, int x, int y, void *text, int count, in
 #define GEN2_GLYPH_Y    (-71)
 static int screen_draw(void *screen, void *context) {
     void *globals = PTR(screen, SCREEN_GLOBALS);
-    int menu_visible = !native_menu_hidden(globals);
     struct title_context view;
     struct custom_state *s = state(raw_layer(screen));
-    if (menu_visible) {
+    int draw_glyph = !native_menu_hidden(globals) && s->flow.root != CUSTOM_ROOM_SENSORS;
+    if (draw_glyph) {
         view.y_offset = (int)(SCALED(s, TITLE_LIFT) * native_menu_scale(globals));
         view.original = PTR(context, 0);
         bytes_copy(view.vtable, view.original, sizeof(view.vtable));
@@ -1359,9 +1386,9 @@ static int screen_draw(void *screen, void *context) {
         PTR(context, 0) = view.vtable;
     }
     int result = native_screen_draw(screen, context);
-    if (menu_visible)
+    if (draw_glyph)
         PTR(context, 0) = view.original;
-    if (menu_visible) {
+    if (draw_glyph) {
         if (!s->menu_glyph) {
             int error = 0;
             enum custom_page root = s->flow.root;

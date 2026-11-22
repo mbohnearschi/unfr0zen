@@ -42,7 +42,15 @@ NLCLIENT_REQUIRE_GOLDENS=1 cargo test -p unfr0zen-core --test nlclient_golden
 `build/custom-screen.o`). Use the build image's compiler to reproduce these
 exact bytes. Golden linking needs the object but no firmware. The full-stage
 checks need the original samples; strict mode fails if any baseline is missing.
-Ordinary public CI can check all three payloads without shipping firmware.
+Ordinary public CI can check the linked payloads without shipping firmware.
+The `payload` and `output` fingerprints record the original screen object.
+The `room_sensors_payload` references use Debian clang 19.1.7 and were checked
+against LLD. `room_sensors_output` records the generic 6.5-14 build with the
+new object. The other variants verify the new payload, the unchanged
+discovery and patch data, and the round trip through the undo journal.
+The separate 6.5-14 test checks the dedicated Room Sensors entry alongside
+all four integrations and verifies that the stock Sensor Schedule stays
+in the expanded menu.
 
 The US 6.5-14 sample also exercises the expanded Settings list. The test
 adds two dedicated entries alongside all four existing integration entries.

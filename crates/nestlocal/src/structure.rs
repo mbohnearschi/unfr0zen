@@ -24,8 +24,11 @@ pub fn structure_id(serial: &str) -> String {
 
 /// Adds the link and structure buckets when the store has none: a unit's
 /// own changes to them are kept.
-pub fn ensure_structure(store: &Store, serial: &str) {
-    let id = format!("structure.{}", structure_id(serial));
+pub fn ensure_structure(store: &Store, serial: &str, saved_id: Option<&str>) {
+    let id = match saved_id {
+        Some(id) => format!("structure.{id}"),
+        None => format!("structure.{}", structure_id(serial)),
+    };
     if store.get(&format!("link.{serial}")).is_none() {
         store.merge(&format!("link.{serial}"), &fields! {"structure" => id.clone()}, 0, 0, false);
     }
@@ -64,13 +67,13 @@ mod tests {
     #[test]
     fn ensure_structure_keeps_the_units_changes() {
         let s = temp_store();
-        ensure_structure(&s, "S");
+        ensure_structure(&s, "S", None);
         let sid = format!("structure.{}", structure_id("S"));
         assert_eq!(s.get("link.S").unwrap().value["structure"], json!(sid));
         assert_eq!(s.get(&sid).unwrap().value["devices"], json!(["device.S"]));
         // What the unit changed stays.
         s.merge(&sid, &fields! {"away" => true}, 0, 0, true);
-        ensure_structure(&s, "S");
+        ensure_structure(&s, "S", None);
         assert_eq!(s.get(&sid).unwrap().value["away"], json!(true));
     }
 
@@ -136,7 +139,7 @@ mod tests {
     fn ensure_structure_keeps_a_link_the_unit_has() {
         let s = temp_store();
         s.merge("link.S", &fields! {"structure" => "structure.from-nest"}, 5, 100, true);
-        ensure_structure(&s, "S");
+        ensure_structure(&s, "S", None);
         let link = s.get("link.S").unwrap();
         assert_eq!((link.revision, link.value["structure"].clone()), (5, json!("structure.from-nest")));
         // The structure nestlocal would name is still made: the unit's own may be missing.

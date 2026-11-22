@@ -72,6 +72,9 @@
             <p>The thermostat's settings menu gets an entry for each installed feature, right after its first entry: <b>ZIGBEE</b> (pairing with a 30-second countdown), <b>MATTER</b> (pairing), <b>THEMES</b> (the home screen themes) and <b>DOOM</b>. <b>UNFR0ZEN</b>, with the version that set the thermostat up, takes <b>LEGAL INFO</b>'s place before <b>RESET</b>. <b>NEST APP</b>, <b>SOFTWARE</b>, <b>NEST PRO</b>, <b>LOCK</b> and <b>LEGAL INFO</b> leave the menu. Each entry opens its page; Back returns to the menu.</p>
             <p>The screens are linked into the unit's own <code>nlclient</code>; the original is kept at <code>/etc/unfr0zen/nlclient.original</code> across installs (on the 3rd generation at <code>/media/scratch/.unfr0zen/backup/nlclient.original</code>). Supported versions and undo: <a href="https://github.com/unfr0zen/unfr0zen/blob/main/platform/common/nlclient/README.md" target="_blank" rel="noopener">platform/common/nlclient/README.md</a>.</p>
 
+            <h3 id="room-sensors">Room Sensors</h3>
+            <p>Installing unfr0zen preserves existing Nest Temperature Sensor pairings on 3rd generation thermostats. With the reviewed US 6.5-14 firmware and nestlocal installed, <b>Settings → Room Sensors</b> shows each paired sensor's last temperature, its reading age, and the current HVAC temperature source. Live readings require Nest's Bluetooth radio.</p>
+
             <h2 id="mqtt"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg>MQTT</h2>
             <div class="table-scroll">
                 <table>

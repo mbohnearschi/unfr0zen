@@ -28,7 +28,14 @@ pub fn build_with_extra_entries(
     extra_entries: &[&str],
 ) -> Result<Built> {
     let discovery = discovery::discover(source)?;
-    if !extra_entries.is_empty() && discovery.stock_sha256 != menu_expansion::STOCK_SHA {
+    let reviewed_menu = discovery.stock_sha256 == menu_expansion::STOCK_SHA;
+    let extra_entries =
+        if extra_entries.is_empty() && reviewed_menu && sections.contains(&super::menu::Section::RoomSensors) {
+            &["roomsensors"]
+        } else {
+            extra_entries
+        };
+    if !extra_entries.is_empty() && !reviewed_menu {
         return device("expanded Settings menus require the reviewed US gen 3 6.5-14 executable");
     }
     let elf = Elf::parse(source)?;

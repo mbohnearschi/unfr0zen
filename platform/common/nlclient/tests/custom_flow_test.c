@@ -66,6 +66,11 @@ int main(void) {
     struct custom_flow f = {.page = CUSTOM_HOME, .root = CUSTOM_HOME};
     assert(custom_choose(&f, 0, request, 0) == 2);
     assert(!custom_back(&f));
+    /* The dedicated Room Sensors page opens by its own name. */
+    assert(custom_root("roomsensors") == CUSTOM_ROOM_SENSORS);
+    f = (struct custom_flow){.page = CUSTOM_ROOM_SENSORS, .root = CUSTOM_ROOM_SENSORS};
+    last = -1;
+    assert(custom_choose(&f, 0, request, 0) == CHOOSE_EXIT && last == -1);
     /* Matter: Enable pairing, its confirmation, the pairing; Back goes up a
      * page, and from Matter's own page out to the menu. */
     f = (struct custom_flow){.page = CUSTOM_MATTER, .root = CUSTOM_MATTER};

@@ -704,12 +704,26 @@ pub fn set_up_owned(
     }
     // nlclient's journal carries its internet check URL too, so undo and
     // upgrades take it back with the screen.
+    // An installed nestlocal stays as the unit's cloud. A run with no
+    // integrations turns them off and restores Nest's Thread radio after Zigbee.
+    let local_installed = volume.inspect(nestlocal::OPTIONS)?.is_some();
+    let local_service = options.mqtt.is_some()
+        || options.matter.is_some()
+        || options.zigbee
+        || options.doom.is_some()
+        || options.theme.is_some()
+        || options.external_temperature
+        || local_installed;
     // The settings menu shows an entry for each feature on.
     let sections: Vec<_> = [
         (options.zigbee, crate::nlclient::menu::Section::Zigbee),
         (options.matter.is_some(), crate::nlclient::menu::Section::Matter),
         (options.theme.is_some(), crate::nlclient::menu::Section::Themes),
         (options.doom.is_some(), crate::nlclient::menu::Section::Doom),
+        (
+            target == Device::Diamond3 && local_service && !options.external_temperature,
+            crate::nlclient::menu::Section::RoomSensors,
+        ),
     ]
     .into_iter()
     .filter(|(on, _)| *on)
@@ -750,18 +764,7 @@ pub fn set_up_owned(
         set_up_ntp(&mut tree, if server.is_empty() { DEFAULT_NTP_SERVER } else { server })?;
     }
     let mut overlay = None;
-    // An installed nestlocal is the unit's cloud, so it stays; a run with no
-    // integration rewrites its files with them all off, which also puts
-    // Nest's Thread radio set-up back after Zigbee.
-    let turn_off = volume.inspect(nestlocal::OPTIONS)?.is_some();
-    if options.mqtt.is_some()
-        || options.matter.is_some()
-        || options.zigbee
-        || options.doom.is_some()
-        || options.theme.is_some()
-        || options.external_temperature
-        || turn_off
-    {
+    if local_service {
         fetch(volume, &mut tree, &mut originals, &nestlocal::STOCK_FILES, true, true)?;
         fetch(volume, &mut tree, &mut originals, &[nestlocal::UNLOCK_BUNDLE], false, true)?;
         fetch(
@@ -1938,6 +1941,41 @@ mod tests {
         assert!(volume.text(product).contains("key=\"ble_disabled\" value=\"0\""));
         assert!(!volume.text(product).contains("unfr0zen owns BLE for Matter"));
         assert!(set_up(&mut volume, &options, false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reinstall_preserves_existing_room_sensor_records() {
+        use crate::nlclient::menu::Section;
+        let pki = nestlocal::generate_pki().unwrap();
+        let mut volume = nestlocal_unit(Some(&pki));
+        let stock_screen = b"\x7fELF stock screen";
+        volume.files.insert(crate::nlclient::BINARY.into(), ("0:0".into(), 0o755, stock_screen.to_vec()));
+        let saved = br#"<settings>
+            <s key="associated_rcs_sensors" value="kryptonite.ABCD,"/>
+            <s key="kryptonite.ABCD.key" value="test-pairing-key"/>
+        </settings>"#;
+        let records: [(&str, &[u8]); 3] = [
+            ("media/user-config/settings.config", saved),
+            ("media/data/rcsmanager.json", br#"{"associated_sensor_info":[{"ID":"kryptonite.ABCD"}]}"#),
+            ("media/data/rcs.kryptonite.ABCD.recovery", b"example recovery history"),
+        ];
+        for (name, data) in records {
+            volume.files.insert(name.into(), ("0:0".into(), 0o600, data.to_vec()));
+        }
+        let with_mqtt = Options { mqtt: Some(Mqtt { url: "broker".into(), ..Mqtt::default() }), ..options() };
+        let patch_screen = |source: &[u8], sections: &[Section]| {
+            assert_eq!(source, stock_screen);
+            assert!(sections.contains(&Section::RoomSensors));
+            crate::nlclient::Patch::journal(source, b"\x7fELF patched screen")
+        };
+        for install in [with_mqtt, options()] {
+            set_up_on_device(&mut volume, Device::Diamond3, &install, b"ARMV7", &mut no_pki, false, &patch_screen)
+                .unwrap();
+            for (name, data) in records {
+                assert_eq!(volume.files[name].2, data);
+                assert_eq!(volume.files[name].1, 0o600);
+            }
+        }
     }
 
     #[test]

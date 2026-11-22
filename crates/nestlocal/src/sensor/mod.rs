@@ -11,6 +11,7 @@ pub mod beacon;
 pub mod chip;
 #[cfg(target_os = "linux")]
 pub mod port;
+pub mod room_sensors;
 pub mod socket;
 
 use std::io;
@@ -658,7 +659,7 @@ mod tests {
         assert_eq!(where_id(&store, "S", None).as_deref(), Some("old-room"), "gen 3 keeps to the bucket");
         std::fs::remove_file(&settings).unwrap();
         assert_eq!(where_id(&store, "S", Some(&settings)).as_deref(), Some("old-room"));
-        crate::structure::ensure_structure(&store, "S");
+        crate::structure::ensure_structure(&store, "S", None);
         ensure_buckets(&store, "S", "kryptonite.AB", Some("living-room"));
         keep_location(&store, "S", "kryptonite.AB");
         store.merge("device.S", &fields! {"where_id" => "new-room"}, 0, 0, true);

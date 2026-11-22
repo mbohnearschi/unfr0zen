@@ -53,8 +53,8 @@ fn embedded_object_links_to_golden_payloads() {
         let linked =
             linker::link(&object, golden["patch"]["payload_address"].as_u64().unwrap() as u32, &externals).unwrap();
         assert_eq!(
-            json!({"size":linked.bytes.len(),"entry":linked.entry,"symbols":linked.symbols,"sha256":sha256_hex(&linked.bytes)}),
-            golden["payload"]
+            &json!({"size":linked.bytes.len(),"entry":linked.entry,"symbols":linked.symbols,"sha256":sha256_hex(&linked.bytes)}),
+            golden.get("room_sensors_payload").unwrap_or(&golden["payload"])
         );
     }
 }
@@ -95,16 +95,22 @@ fn stock_dumps_match_every_recorded_stage() {
         }
         let offset = found.manifest["payload_offset"].as_u64().unwrap() as usize;
         let size = found.manifest["payload_size"].as_u64().unwrap() as usize;
+        let (expected_payload, expected_output) = match golden.get("room_sensors_payload") {
+            Some(payload) => (payload, golden.get("room_sensors_output")),
+            None => (&golden["payload"], Some(&golden["output"])),
+        };
         assert_eq!(
-            json!({"size":size,"entry":found.manifest["entry"],"symbols":found.manifest["symbols"],"sha256":sha256_hex(&found.output[offset..offset+size])}),
-            golden["payload"]
+            &json!({"size":size,"entry":found.manifest["entry"],"symbols":found.manifest["symbols"],"sha256":sha256_hex(&found.output[offset..offset+size])}),
+            expected_payload
         );
-        let mut journal = Vec::new();
-        flate2::read::GzDecoder::new(found.journal.as_slice()).read_to_end(&mut journal).unwrap();
-        assert_eq!(
-            json!({"size":found.output.len(),"sha256":sha256_hex(&found.output),"journal_sha256":sha256_hex(&journal)}),
-            golden["output"]
-        );
+        if let Some(output) = expected_output {
+            let mut journal = Vec::new();
+            flate2::read::GzDecoder::new(found.journal.as_slice()).read_to_end(&mut journal).unwrap();
+            assert_eq!(
+                &json!({"size":found.output.len(),"sha256":sha256_hex(&found.output),"journal_sha256":sha256_hex(&journal)}),
+                output
+            );
+        }
         let patch = nlclient::Patch::parse(&found.journal).unwrap();
         assert_eq!(patch.apply(&found.output, true).unwrap(), stock);
     }
@@ -413,7 +419,7 @@ fn reviewed_builds_share_their_natives_library_calls() {
 fn a_recompiled_build_is_patched_and_named_as_no_reviewed_one() {
     let Some(stock) = stock_sample() else { return };
     let before = nlclient::discovery::discover(&stock).unwrap();
-    assert_eq!(before.variant.as_deref(), Some("2025"));
+    let reviewed = before.variant.as_deref().expect("the stock sample must match a reviewed build");
     let mut changed = stock.clone();
     let at = va(&changed, before.native_api["native_layer_ctor"]);
     changed[at] ^= 1;
@@ -421,10 +427,12 @@ fn a_recompiled_build_is_patched_and_named_as_no_reviewed_one() {
     assert_eq!(found.variant, None);
     assert_eq!(found.native_api, before.native_api);
     assert_eq!(found.layout, before.layout);
-    assert_eq!(found.matches["2025"], found.evidence.len());
+    assert_eq!(found.matches[reviewed], found.evidence.len());
     assert!(found.validation.starts_with("unreviewed build: structurally consistent"), "{}", found.validation);
     let object = object().unwrap();
-    assert_eq!(nlclient::builder::build(&changed, &object, &[]).unwrap().manifest["reviewed"], false);
+    let patched = nlclient::builder::build(&changed, &object, &[nlclient::menu::Section::RoomSensors]).unwrap();
+    assert_eq!(patched.manifest["reviewed"], false);
+    assert!(!patched.manifest["settings_menu"]["names"].as_array().unwrap().iter().any(|name| name == "roomsensors"));
     assert_eq!(nlclient::builder::build(&stock, &object, &[]).unwrap().manifest["reviewed"], true);
 }
 
@@ -561,6 +569,13 @@ fn gen_3_settings_menu_registers_extra_entries_alongside_all_integrations() {
         assert!(relocated.contains(&slot) && relocated.contains(&(slot + 4)));
     }
     assert_eq!(nlclient::Patch::parse(&built.journal).unwrap().apply(&built.output, true).unwrap(), stock);
+
+    let mut room_sensors = enabled.to_vec();
+    room_sensors.push(nlclient::menu::Section::RoomSensors);
+    let rooms = nlclient::builder::build(&stock, &object, &room_sensors).unwrap();
+    let names = rooms.manifest["settings_menu"]["names"].as_array().unwrap();
+    assert_eq!(names[1..6], ["account", "update", "proinfoscreen", "templock", "roomsensors"]);
+    assert!(names.iter().any(|name| name == "remotecomfortscreen"));
 
     let duplicate = nlclient::builder::build_with_extra_entries(&stock, &object, &enabled, &["temperature"]);
     assert_eq!(duplicate.err().unwrap().to_string(), "duplicate Settings screen name temperature");

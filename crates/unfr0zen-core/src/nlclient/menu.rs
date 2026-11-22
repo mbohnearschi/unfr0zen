@@ -28,10 +28,11 @@ pub enum Section {
     Matter,
     Themes,
     Doom,
+    RoomSensors,
 }
 
 impl Section {
-    /// Every section, in the menu's order.
+    /// Sections that use stock entries, in the menu's order.
     pub const ALL: [Section; 4] = [Section::Zigbee, Section::Matter, Section::Themes, Section::Doom];
 
     fn host(self) -> &'static str {
