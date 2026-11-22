@@ -9,4 +9,8 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# JetBrains IDE project files.
+.idea/
+*.iml
+
 TODO.md
