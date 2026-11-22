@@ -36,6 +36,7 @@ use crate::logf;
 use crate::mqtt;
 use crate::naming::{Names, Naming};
 use crate::occupancy::Occupancy;
+use crate::sensor::room_sensors::Reading;
 use crate::store::{Object, Store};
 use crate::weather::Outdoor;
 
@@ -67,6 +68,7 @@ pub struct Bridge {
     mqtt: OnceLock<mqtt::Client>,
     /// The unit's wakes since nestlocal started (wake.rs).
     wakes: AtomicU64,
+    room_sensors: Mutex<Vec<Reading>>,
     announced: Mutex<Option<BTreeMap<String, String>>>, // discovery topic -> config last published
     naming: Mutex<Naming>,
     /// The entities are removed, waiting out RENAME_WAIT.
@@ -105,6 +107,7 @@ impl Bridge {
             brightness: Arc::new(crate::brightness::Watch::default()),
             mqtt: OnceLock::new(),
             wakes: AtomicU64::new(0),
+            room_sensors: Mutex::new(Vec::new()),
             announced: Mutex::new(None),
             naming: Mutex::new(naming),
             renaming: AtomicBool::new(false),
@@ -192,6 +195,17 @@ impl Bridge {
         let _ = self.sensor.set(sensor);
     }
 
+    pub(crate) fn set_room_sensors(&self, readings: Vec<Reading>) {
+        {
+            let mut room_sensors = self.room_sensors.lock().unwrap();
+            if *room_sensors == readings {
+                return;
+            }
+            *room_sensors = readings;
+        }
+        self.publish_state();
+    }
+
     /// Connects to the broker, and from then on publishes every change and
     /// takes Home Assistant's commands.
     pub fn run(
@@ -275,7 +289,6 @@ impl Bridge {
 
     fn connected(&self) {
         logf!("mqtt: connected");
-        *self.announced.lock().unwrap() = None;
         if let Some(c) = self.mqtt.get() {
             c.subscribe(&format!("{}/set/#", self.base));
             c.subscribe("homeassistant/status");
@@ -285,7 +298,7 @@ impl Bridge {
         for o in self.store.all() {
             self.publish_raw(&o);
         }
-        self.publish_state();
+        self.publish_state_and_discovery(true);
         self.publish_update();
     }
 
@@ -295,8 +308,7 @@ impl Bridge {
                 // Home Assistant restarted: announce again, and rename again
                 // if it may have missed the last.
                 self.naming.lock().unwrap().home_assistant_started();
-                *self.announced.lock().unwrap() = None;
-                self.publish_state();
+                self.publish_state_and_discovery(true);
             }
         } else if topic == format!("{}/set/update", self.base) {
             let text = String::from_utf8_lossy(payload);
@@ -381,13 +393,33 @@ impl Bridge {
 
     /// What nlclient runs with since heatlink.rs restarted it.
     fn publish_state(&self) {
+        self.publish_state_and_discovery(false);
+    }
+
+    fn publish_state_and_discovery(&self, replay: bool) {
+        let room_sensors = self.room_sensors.lock().unwrap();
         let buckets = self.buckets();
         let (Some(dev), Some(sh)) = (buckets.get("device"), buckets.get("shared")) else {
             return; // the unit has not reported yet
         };
-        self.announce(dev, sh);
-        let shown = self.shown(dev, sh);
-        self.publish(&format!("{}/state", self.base), true, Value::Object(shown).to_string().as_bytes());
+        self.announce(dev, sh, &room_sensors, replay);
+        let mut state = self.shown(dev, sh);
+        if !room_sensors.is_empty() {
+            let readings: Fields = room_sensors
+                .iter()
+                .map(|reading| {
+                    (
+                        reading.id.clone(),
+                        Value::Object(fields! {
+                            "name" => reading.name.as_str(),
+                            "temperature" => shown(reading.temperature.map(num).as_ref()),
+                        }),
+                    )
+                })
+                .collect();
+            state.insert("room_sensors".into(), Value::Object(readings));
+        }
+        self.publish(&format!("{}/state", self.base), true, Value::Object(state).to_string().as_bytes());
     }
 
     /// The state, with what no bucket holds: occupancy, the brightness the
@@ -418,8 +450,13 @@ impl Bridge {
 
     /// Publishes Home Assistant discovery, for what this unit's equipment
     /// can do (can_heat, has_fan, ...). Again only when that changes.
-    fn announce(&self, dev: &Fields, sh: &Fields) {
+    fn announce(&self, dev: &Fields, sh: &Fields, room_sensors: &[Reading], replay: bool) {
         let connected = self.mqtt.get().is_some_and(|c| c.is_connected());
+        // Remember what was advertised before a disconnect, so the next
+        // announcement can remove anything unpaired while the broker was away.
+        if self.mqtt.get().is_some() && !connected {
+            return;
+        }
         let (names, rename) = {
             let naming = self.naming.lock().unwrap();
             (naming.wanted.clone(), naming.rename_due())
@@ -545,6 +582,19 @@ impl Bridge {
         let diag = || fields! {"entity_category" => "diagnostic"};
         sensor(&mut add, "current_temperature", "Temperature", "°C", "temperature", Fields::new());
         sensor(&mut add, "current_humidity", "Humidity", "%", "humidity", Fields::new());
+        for reading in room_sensors {
+            let key = format!("room_sensor_{}", reading.id);
+            sensor(
+                &mut add,
+                &key,
+                &reading.name,
+                "°C",
+                "temperature",
+                fields! {
+                    "value_template" => format!("{{{{ value_json.get('room_sensors', {{}}).get('{}', {{}}).get('temperature') }}}}", reading.id),
+                },
+            );
+        }
         sensor(&mut add, "backplate_temperature", "Backplate temperature", "°C", "temperature", diag());
         if self.sensor.get().is_some() {
             sensor(&mut add, "external_temperature", "External temperature", "°C", "temperature", diag());
@@ -902,7 +952,7 @@ impl Bridge {
         }
         let mut n = 0;
         for (topic, config) in &configs {
-            if old.get(topic) != Some(config) {
+            if replay || old.get(topic) != Some(config) {
                 self.publish(topic, true, config.as_bytes());
                 n += 1;
             }
@@ -1337,7 +1387,7 @@ pub mod tests {
         let b = test_bridge();
         let dev = obj(json!({"has_fan": true, "temperature_scale": "F", "model_version": "Display-3.4"}));
         let sh = obj(json!({"can_heat": true, "can_cool": false}));
-        b.announce(&dev, &sh);
+        b.announce(&dev, &sh, &[], false);
         let configs = b.announced.lock().unwrap().clone().unwrap();
         let climate: Value =
             serde_json::from_str(&configs["homeassistant/climate/nestlocal_s/thermostat/config"]).unwrap();
@@ -1398,7 +1448,7 @@ pub mod tests {
     fn hot_water_controls_come_with_the_equipment_and_read_its_fields() {
         let announced = |dev: Fields| {
             let b = test_bridge();
-            b.announce(&dev, &Fields::new());
+            b.announce(&dev, &Fields::new(), &[], false);
             let configs = b.announced.lock().unwrap().clone().unwrap();
             [("select", "hot_water_boost"), ("switch", "hot_water_schedule")]
                 .map(|(component, key)| configs.keys().any(|t| t.contains(component) && t.contains(key)))
@@ -1462,7 +1512,7 @@ pub mod tests {
         let b = test_bridge();
         let (dev, sh) = everything();
         b.store.merge("device.S", &dev, 0, 0, true);
-        b.announce(&dev, &sh);
+        b.announce(&dev, &sh, &[], false);
         let configs = b.announced.lock().unwrap().clone().unwrap();
         let s = b.shown(&dev, &sh);
         let mut ids = std::collections::BTreeSet::new();
@@ -1533,7 +1583,7 @@ pub mod tests {
         b.attach_themes(themes.clone());
         let select = |b: &Bridge| -> Value {
             *b.announced.lock().unwrap() = None;
-            b.announce(&dev, &sh);
+            b.announce(&dev, &sh, &[], false);
             let configs = b.announced.lock().unwrap().clone().unwrap();
             serde_json::from_str(&configs["homeassistant/select/nestlocal_s/theme/config"]).unwrap()
         };
@@ -1580,7 +1630,7 @@ pub mod tests {
     fn number_entities_offer_what_their_commands_take() {
         let b = test_bridge();
         let (dev, sh) = everything();
-        b.announce(&dev, &sh);
+        b.announce(&dev, &sh, &[], false);
         let configs = b.announced.lock().unwrap().clone().unwrap();
         let numbers: Vec<Value> = configs
             .iter()
@@ -1671,11 +1721,11 @@ pub mod tests {
         );
         let (dev, sh) = everything();
         // Not connected: nothing to remove the old entities from, so nothing is announced.
-        b.announce(&dev, &sh);
+        b.announce(&dev, &sh, &[], false);
         assert!(b.announced.lock().unwrap().is_none());
         let wanted = b.naming.lock().unwrap().wanted.clone();
         b.naming.lock().unwrap().announced = wanted;
-        b.announce(&dev, &sh);
+        b.announce(&dev, &sh, &[], false);
         let configs = b.announced.lock().unwrap().clone().unwrap();
         let climate: Value =
             serde_json::from_str(&configs["homeassistant/climate/nestlocal_s/thermostat/config"]).unwrap();
@@ -1747,6 +1797,91 @@ pub mod tests {
         let (_, payload, _) = published(&mut conn, &mut buf, |t, _| t == climate).await;
         assert!(!payload.is_empty(), "removed again after Home Assistant had it");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn room_sensor_discovery_keeps_ids_on_rename_and_removes_unpaired_sensors_on_reconnect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let b = test_bridge();
+        let (dev, sh) = everything();
+        b.store.merge("device.S", &dev, 0, 0, true);
+        b.store.merge("shared.S", &sh, 0, 0, true);
+        let upstairs = |temperature| Reading { id: "cd".into(), name: "Upstairs".into(), temperature };
+        let reading = |name: &str, temperature: f64| Reading {
+            id: "ab".into(),
+            name: name.into(),
+            temperature: Some(temperature),
+        };
+        b.set_room_sensors(vec![reading("Study", 21.234), upstairs(None)]);
+        let broker = mqtt::Broker::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap();
+        b.run(&broker, "", "", None);
+        let (mut conn, _) = listener.accept().await.unwrap();
+        let mut buf = bytes::BytesMut::new();
+        crate::mqtt::tests::read_packet(&mut conn, &mut buf).await; // CONNECT
+        tokio::io::AsyncWriteExt::write_all(&mut conn, &[0x20, 2, 0, 0]).await.unwrap();
+
+        let study = "homeassistant/sensor/nestlocal_s/room_sensor_ab/config";
+        let other = "homeassistant/sensor/nestlocal_s/room_sensor_cd/config";
+        let state = "nestlocal/S/state";
+        let (_, payload, retain) = published(&mut conn, &mut buf, |topic, _| topic == study).await;
+        let config: Value = serde_json::from_slice(&payload).unwrap();
+        assert!(retain);
+        assert_eq!(config["name"], "Study");
+        assert_eq!(config["unique_id"], "nestlocal_s_room_sensor_ab");
+        assert_eq!(config["default_entity_id"], "sensor.nestlocal_s_room_sensor_ab");
+        assert_eq!(config["state_topic"], state);
+        assert_eq!(config["unit_of_measurement"], "°C");
+        assert_eq!(config["device_class"], "temperature");
+        assert_eq!(config["state_class"], "measurement");
+        assert!(config["value_template"].as_str().unwrap().contains(".get('ab', {})"));
+        let (_, payload, _) = published(&mut conn, &mut buf, |topic, _| topic == other).await;
+        let other_config: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(other_config["name"], "Upstairs");
+        assert!(other_config["value_template"].as_str().unwrap().contains(".get('cd', {})"));
+        let (_, payload, retain) = published(&mut conn, &mut buf, |topic, _| topic == state).await;
+        let initial: Value = serde_json::from_slice(&payload).unwrap();
+        assert!(retain);
+        assert_eq!(
+            initial["room_sensors"],
+            json!({
+                "ab": {"name": "Study", "temperature": 21.23},
+                "cd": {"name": "Upstairs", "temperature": null},
+            })
+        );
+
+        b.set_room_sensors(vec![reading("Library", 22.0), upstairs(Some(19.4))]);
+        let (_, payload, retain) = published(&mut conn, &mut buf, |topic, _| topic == study).await;
+        let renamed: Value = serde_json::from_slice(&payload).unwrap();
+        let mut expected = config;
+        expected["name"] = "Library".into();
+        assert!(retain);
+        assert_eq!(renamed, expected);
+        let (_, payload, _) = published(&mut conn, &mut buf, |topic, _| topic == state).await;
+        let after: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(after["room_sensors"]["ab"], json!({"name": "Library", "temperature": 22}));
+        assert_eq!(after["room_sensors"]["cd"], json!({"name": "Upstairs", "temperature": 19.4}));
+        assert_eq!(after["current_temperature"], initial["current_temperature"]);
+
+        drop(conn);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while b.mqtt.get().unwrap().is_connected() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        b.set_room_sensors(vec![reading("Library", 22.0)]);
+        b.woke();
+        let (mut conn, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept()).await.unwrap().unwrap();
+        buf.clear();
+        crate::mqtt::tests::read_packet(&mut conn, &mut buf).await; // CONNECT after the wake
+        tokio::io::AsyncWriteExt::write_all(&mut conn, &[0x20, 2, 0, 0]).await.unwrap();
+        let (_, payload, retain) = published(&mut conn, &mut buf, |topic, _| topic == other).await;
+        assert!(retain && payload.is_empty());
+        let (_, payload, _) = published(&mut conn, &mut buf, |topic, _| topic == study).await;
+        assert_eq!(serde_json::from_slice::<Value>(&payload).unwrap(), renamed);
+        let (_, payload, _) = published(&mut conn, &mut buf, |topic, _| topic == state).await;
+        assert_eq!(serde_json::from_slice::<Value>(&payload).unwrap()["room_sensors"].as_object().unwrap().len(), 1);
     }
 
     #[tokio::test]

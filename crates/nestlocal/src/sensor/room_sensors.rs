@@ -1,5 +1,5 @@
 //! Room Sensors for stock Nest sensors on the gen 3.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::io::{self, Read};
 use std::path::Path;
@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::bridge::Bridge;
 use crate::fields;
 use crate::store::{now_ms, Store};
 use crate::{logf, nlsettings, settings_ui};
@@ -22,13 +23,21 @@ const RENAME_TAKEN: &str = "room-sensor-name.taken";
 const RENAME_STATUS: &str = "room-sensor-name.status";
 type Names = BTreeMap<String, String>;
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct Reading {
+    pub id: String,
+    pub name: String,
+    pub temperature: Option<f64>,
+}
+
 #[derive(Default)]
 struct Page {
     summary: String,
     catalog: String,
+    readings: Vec<Reading>,
 }
 
-pub async fn publish(store: Arc<Store>, serial: String, settings: String, state: String) {
+pub async fn publish(store: Arc<Store>, serial: String, settings: String, state: String, mqtt: Option<Arc<Bridge>>) {
     let path = Path::new(&state).with_extension("room-sensor-names.json");
     let mut names = load_names(&path).inspect_err(|e| logf!("room sensor names: {e}")).ok();
     let mut last = Page::default();
@@ -59,6 +68,11 @@ pub async fn publish(store: Arc<Store>, serial: String, settings: String, state:
         let page = render(&store, &serial, manager.as_ref(), &settings, names.as_ref(), now_ms() / 1000);
         replace_display("room-sensors.txt", &mut last.summary, page.summary);
         replace_display("room-sensors.catalog", &mut last.catalog, page.catalog);
+        // nlclient can replace its settings while we read them. Keep the
+        // broker's last set of entities until we can read a complete file.
+        if let Some(mqtt) = mqtt.as_ref().filter(|_| settings.trim_ascii_end().ends_with(b"</settings>")) {
+            mqtt.set_room_sensors(page.readings);
+        }
         if let Some(reply) = reply {
             if let Err(e) = settings_ui::publish(RENAME_STATUS, reply.as_bytes()) {
                 logf!("room sensor name status: {e}");
@@ -358,6 +372,8 @@ fn render(
     };
     let mut text = control;
     let mut catalog = String::new();
+    let mut readings = Vec::new();
+    let paired: BTreeSet<_> = paired_ids(settings).collect();
     if sensors.is_empty() {
         text.push_str("\n\nNo paired room sensors");
     }
@@ -370,6 +386,9 @@ fn render(
                 .or_else(|| sensor["temperature"].as_f64())
                 .filter(|value| (-50.0..=80.0).contains(value))
         });
+        if paired.contains(id) {
+            readings.push(Reading { id: id.trim_start_matches("kryptonite.").to_ascii_lowercase(), name, temperature });
+        }
         let Some(temperature) = temperature else {
             text.push_str("No temperature reported");
             continue;
@@ -392,7 +411,7 @@ fn render(
             None => text.push_str("Reading time unavailable"),
         }
     }
-    Page { summary: text, catalog }
+    Page { summary: text, catalog, readings }
 }
 
 #[cfg(test)]
@@ -540,6 +559,11 @@ mod tests {
         let page = render(&store, "S", Some(&manager), settings, Some(&persisted), 1000);
         assert!(page.summary.starts_with("Controlling: Upstairs\n\nUpstairs\n22.2 °C"));
         assert!(page.catalog.starts_with("kryptonite.AB\tUpstairs\n"));
+        assert_eq!(
+            page.readings,
+            vec![Reading { id: "ab".into(), name: "Upstairs".into(), temperature: Some(22.2) }],
+            "the paired sensor uses its saved alias; a bucket without a pairing key stays out of MQTT"
+        );
 
         store.merge(id, &fields! {"description" => "Old label"}, 0, 0, true);
         sync_names(&store, settings, &persisted);

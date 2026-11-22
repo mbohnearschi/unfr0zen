@@ -368,6 +368,7 @@ async fn run(config: flags::Config) {
             config.serial.clone(),
             config.settings.clone(),
             config.state.clone(),
+            bridge.clone().filter(|_| !config.mqtt.is_empty()),
         ));
     }
     if device::current().name == "diamond3" {
