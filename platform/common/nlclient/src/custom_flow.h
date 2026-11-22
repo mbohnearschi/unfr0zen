@@ -14,6 +14,8 @@ enum custom_page {
     CUSTOM_DOOM,
     CUSTOM_THEMES,
     CUSTOM_ROOM_SENSORS,
+    CUSTOM_ROOM_SENSOR,
+    CUSTOM_ROOM_SENSOR_RENAME,
 };
 
 /* The settings menu's entries, each a stock screen whose factory builds
@@ -62,6 +64,8 @@ struct custom_flow {
     enum custom_page root;
     int action_failed;
     int theme_count;
+    int room_count;
+    int room_index;
 };
 
 /* Whether the page shows an operation in progress (a pairing). */
@@ -73,6 +77,10 @@ static inline int custom_matter(enum custom_page page) {
     return page == CUSTOM_MATTER || page == CUSTOM_MATTER_PAIRING || page == CUSTOM_MATTER_CONFIRM;
 }
 
+static inline int custom_rooms(enum custom_page page) {
+    return page == CUSTOM_ROOM_SENSORS || page == CUSTOM_ROOM_SENSOR || page == CUSTOM_ROOM_SENSOR_RENAME;
+}
+
 /* Goes to the page's parent; false where that is the settings menu: the
  * entry's own page, and Matter's pairing. */
 static int custom_back(struct custom_flow *flow) {
@@ -82,6 +90,7 @@ static int custom_back(struct custom_flow *flow) {
         return 0;
     flow->page = custom_matter(flow->page)                                                    ? CUSTOM_MATTER
                  : flow->page == CUSTOM_ZIGBEE_PAIRING || flow->page == CUSTOM_ZIGBEE_CONFIRM ? CUSTOM_ZIGBEE
+                 : flow->page == CUSTOM_ROOM_SENSOR_RENAME                                    ? CUSTOM_ROOM_SENSOR
                                                                                               : flow->root;
     flow->action_failed = 0;
     return 1;
@@ -139,12 +148,28 @@ static inline int custom_matter_refresh(struct custom_flow *flow, const char *st
 /* Acts on the page's entry `choice`, asking `request` for what nestlocal
  * does. Returns CHOOSE_EXIT to leave the screen, else CHOOSE_STAY. */
 static int custom_choose(struct custom_flow *flow, int choice, int (*request)(int, void *), void *context) {
-    if (choice < 0 || choice > (flow->page == CUSTOM_THEMES ? flow->theme_count : CHOICE_ROWS - 1))
+    int last = flow->page == CUSTOM_THEMES         ? flow->theme_count
+               : flow->page == CUSTOM_ROOM_SENSORS ? flow->room_count
+                                                   : CHOICE_ROWS - 1;
+    if (choice < 0 || choice > last)
         return CHOOSE_STAY;
     flow->action_failed = 0;
-    if (flow->page == CUSTOM_HOME || flow->page == CUSTOM_ROOM_SENSORS) {
+    if (flow->page == CUSTOM_HOME) {
         if (choice == 0)
             return CHOOSE_EXIT;
+    } else if (flow->page == CUSTOM_ROOM_SENSORS) {
+        if (choice == flow->room_count)
+            return CHOOSE_EXIT;
+        flow->room_index = choice;
+        flow->page = CUSTOM_ROOM_SENSOR;
+    } else if (flow->page == CUSTOM_ROOM_SENSOR) {
+        if (choice == 0)
+            flow->page = CUSTOM_ROOM_SENSOR_RENAME;
+        else if (choice == 1)
+            return custom_back_choice(flow);
+    } else if (flow->page == CUSTOM_ROOM_SENSOR_RENAME) {
+        /* Text entry is handled by the screen that owns the draft. */
+        return CHOOSE_STAY;
     } else if (flow->page == CUSTOM_THEMES) {
         /* A theme choice goes back as Back does; the last entry is Back. */
         if (choice < flow->theme_count)

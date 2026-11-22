@@ -1,10 +1,40 @@
 #include <assert.h>
+#include <string.h>
 #include "../src/custom_flow.h"
+#include "../src/room_sensor_names.h"
 static int last = -1, fail = 0;
 static int request(int action, void *context) {
     (void)context;
     last = action;
     return fail;
+}
+static void room_names_test(void) {
+    struct room_sensor_catalog catalog = {.text = "kryptonite.AB\tOffice\ninvalid\nkryptonite.CD\tLoft"};
+    room_parse_catalog(&catalog);
+    assert(catalog.count == 2);
+    assert(strcmp(catalog.rows[1].id, "kryptonite.CD") == 0);
+    assert(strcmp(catalog.rows[1].name, "Loft") == 0);
+    struct custom_flow f = {.page = CUSTOM_ROOM_SENSORS, .root = CUSTOM_ROOM_SENSORS, .room_count = catalog.count};
+    assert(custom_choose(&f, 1, request, 0) == CHOOSE_STAY);
+    assert(f.page == CUSTOM_ROOM_SENSOR && f.room_index == 1);
+    assert(custom_choose(&f, 0, request, 0) == CHOOSE_STAY && f.page == CUSTOM_ROOM_SENSOR_RENAME);
+    assert(custom_back(&f) && f.page == CUSTOM_ROOM_SENSOR);
+    assert(custom_back(&f) && f.page == CUSTOM_ROOM_SENSORS);
+    assert(custom_choose(&f, 2, request, 0) == CHOOSE_EXIT);
+
+    char draft[ROOM_SENSOR_NAME_SIZE] = "Entrée";
+    room_name_delete(draft);
+    room_name_delete(draft);
+    assert(room_name_append(draft, 'y') && strcmp(draft, "Entry") == 0);
+    for (int i = 5; i < ROOM_SENSOR_NAME_MAX; i++)
+        assert(room_name_append(draft, 'a'));
+    assert(!room_name_append(draft, 'b'));
+    char token[ROOM_NAME_TOKEN_SIZE + 1];
+    room_name_token(token, 0x1234abcd);
+    assert(strcmp(token, "1234abcd") == 0);
+    assert(strcmp(room_name_reply("1234abcd\tSaved", token), "Saved") == 0);
+    assert(!room_name_reply("1234abce\tSaved", token));
+    assert(!room_name_reply("1234abcd", token));
 }
 static void matter_refresh_test(void) {
     struct custom_flow f = {.page = CUSTOM_MATTER, .root = CUSTOM_MATTER};
@@ -58,6 +88,7 @@ static void matter_refresh_test(void) {
 }
 int main(void) {
     matter_refresh_test();
+    room_names_test();
     /* Each entry's stock screen name opens its page; Legal Info's is UNFR0ZEN's. */
     assert(custom_root("account") == CUSTOM_ZIGBEE && custom_root("update") == CUSTOM_MATTER);
     assert(custom_root("proinfoscreen") == CUSTOM_THEMES && custom_root("templock") == CUSTOM_DOOM);

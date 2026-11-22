@@ -363,7 +363,12 @@ async fn run(config: flags::Config) {
         logf!("settings UI: {e}");
     }
     if stock_room_sensors {
-        tokio::spawn(sensor::room_sensors::publish(store.clone(), config.serial.clone(), config.settings.clone()));
+        tokio::spawn(sensor::room_sensors::publish(
+            store.clone(),
+            config.serial.clone(),
+            config.settings.clone(),
+            config.state.clone(),
+        ));
     }
     if device::current().name == "diamond3" {
         scratch::check();

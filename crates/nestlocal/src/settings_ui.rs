@@ -61,6 +61,10 @@ pub fn init(matter: bool, zigbee: bool, doom: bool, theme: bool) -> std::io::Res
         "zigbee.request",
         "doom.request",
         "theme.request",
+        "room-sensors.catalog",
+        "room-sensor-name.request",
+        "room-sensor-name.taken",
+        "room-sensor-name.status",
         "matter.code",
         "matter.png",
     ] {

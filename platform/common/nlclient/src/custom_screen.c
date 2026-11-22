@@ -9,6 +9,7 @@
  * (struct custom_state, after the stock layer's PRIMARY_SIZE bytes), and
  * what must outlive it in files under /var/run. */
 #include "custom_flow.h"
+#include "room_sensor_names.h"
 typedef unsigned int u32;
 typedef unsigned char u8;
 
@@ -302,6 +303,16 @@ struct theme_catalog {
     char **ids, **labels;
     int count;
 };
+enum room_name_choice {
+    ROOM_SAVE,
+    ROOM_SPACE,
+    ROOM_DELETE,
+    ROOM_GROUP,
+    ROOM_CLEAR,
+    ROOM_CANCEL,
+    ROOM_CHARACTER,
+    ROOM_CHOICE_CAPACITY = ROOM_CHARACTER + 26,
+};
 struct custom_state {
     struct custom_flow flow;
     int active;
@@ -311,6 +322,14 @@ struct custom_state {
     char code[32];
     char detail[192];
     char room_sensors[1024];
+    struct room_sensor_catalog room_catalog;
+    struct room_sensor_row room_selected;
+    char room_draft[ROOM_SENSOR_NAME_SIZE];
+    char room_status[64];
+    char room_token[ROOM_NAME_TOKEN_SIZE + 1];
+    char room_choice_ids[ROOM_CHOICE_CAPACITY][3];
+    unsigned int room_sequence;
+    int room_group, room_pending;
     enum custom_page image_page;
     void *activity_images[ACTIVITY_FRAMES];
     unsigned int activity_ticks;
@@ -985,6 +1004,115 @@ static void read_status(enum custom_page page, char *out, unsigned int size) {
 static void read_room_sensors(char *out, unsigned int size) {
     read_text(RUN "room-sensors.txt", out, size, "Room sensor status unavailable");
 }
+static void read_room_catalog(char *out, unsigned int size) { read_text(RUN "room-sensors.catalog", out, size, ""); }
+
+static const char *room_characters(int group) {
+    return group == 0 ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ" : group == 1 ? "abcdefghijklmnopqrstuvwxyz" : "0123456789-_.";
+}
+
+static int layout_room_choices(struct custom_state *s) {
+    s->config.text_count = 1;
+    if (s->flow.page == CUSTOM_ROOM_SENSORS) {
+        read_room_sensors(s->room_sensors, sizeof(s->room_sensors));
+        read_room_catalog(s->room_catalog.text, sizeof(s->room_catalog.text));
+        room_parse_catalog(&s->room_catalog);
+        int count = s->room_catalog.count;
+        s->flow.room_count = count;
+        choices_capacity(s, count + 1);
+        native_string_copy(&s->text[0], s->room_sensors);
+        for (int i = 0; i < count; i++)
+            native_string_copy(&s->choices[i], s->room_catalog.rows[i].name);
+        native_string_copy(&s->choices[count], "Back");
+        return count + 1;
+    }
+    if (s->flow.page == CUSTOM_ROOM_SENSOR) {
+        native_string_copy(&s->text[0], s->room_selected.name);
+        native_string_copy(&s->choices[0], "Rename");
+        native_string_copy(&s->choices[1], "Back");
+        return 2;
+    }
+    native_string_copy(&s->text[0], *s->room_draft ? s->room_draft : "Enter a name");
+    if (*s->room_status) {
+        native_string_copy(&s->text[1], s->room_status);
+        s->config.text_count = 2;
+    }
+    if (s->room_pending) {
+        native_string_copy(&s->choices[0], "Saving name...");
+        return 1;
+    }
+    const char *characters = room_characters(s->room_group);
+    int count = ROOM_CHARACTER + room_text_length(characters);
+    choices_capacity(s, count);
+    native_string_copy(&s->choices[ROOM_SAVE], "Save");
+    native_string_copy(&s->choices[ROOM_SPACE], "Space");
+    native_string_copy(&s->choices[ROOM_DELETE], "Delete last");
+    native_string_copy(&s->choices[ROOM_GROUP], s->room_group == 0   ? "Use a-z"
+                                                : s->room_group == 1 ? "Use 0-9"
+                                                                     : "Use A-Z");
+    native_string_copy(&s->choices[ROOM_CLEAR], "Clear");
+    native_string_copy(&s->choices[ROOM_CANCEL], "Cancel");
+    for (int i = ROOM_CHARACTER; i < count; i++) {
+        char letter[] = {characters[i - ROOM_CHARACTER], 0};
+        native_string_copy(&s->choices[i], letter);
+    }
+    return count;
+}
+
+static void room_status(struct custom_state *s, const char *message) {
+    unsigned int length = room_text_length(message);
+    if (length >= sizeof(s->room_status))
+        length = sizeof(s->room_status) - 1;
+    room_copy(s->room_status, message, length);
+}
+
+static void save_room_name(struct custom_state *s) {
+    unsigned int id_length = room_text_length(s->room_selected.id);
+    unsigned int name_length = room_text_length(s->room_draft);
+    if (!name_length) {
+        room_status(s, "Enter a name");
+        return;
+    }
+    if (!s->room_sequence)
+        s->room_sequence = native_time(0) ^ ((u32)native_getpid() << 16);
+    room_name_token(s->room_token, ++s->room_sequence);
+    char request[ROOM_NAME_TOKEN_SIZE + ROOM_SENSOR_ID_SIZE + ROOM_SENSOR_NAME_SIZE + 1];
+    room_copy(request, s->room_token, ROOM_NAME_TOKEN_SIZE);
+    request[ROOM_NAME_TOKEN_SIZE] = '\t';
+    unsigned int at = ROOM_NAME_TOKEN_SIZE + 1;
+    room_copy(request + at, s->room_selected.id, id_length);
+    at += id_length;
+    request[at++] = '\t';
+    room_copy(request + at, s->room_draft, name_length);
+    if (write_request(RUN "room-sensor-name.tmp", RUN "room-sensor-name.request", request, at + name_length))
+        room_status(s, "Could not save name");
+    else
+        s->room_pending = 12;
+}
+
+static void edit_room_name(struct custom_state *s, int choice) {
+    if (s->room_pending)
+        return;
+    s->room_status[0] = 0;
+    if (choice == ROOM_SAVE)
+        save_room_name(s);
+    else if (choice == ROOM_CANCEL)
+        custom_back(&s->flow);
+    else if (choice == ROOM_CLEAR)
+        s->room_draft[0] = 0;
+    else if (choice == ROOM_DELETE)
+        room_name_delete(s->room_draft);
+    else if (choice == ROOM_GROUP)
+        s->room_group = (s->room_group + 1) % 3;
+    else {
+        const char *characters = room_characters(s->room_group);
+        char key = choice == ROOM_SPACE ? ' '
+                   : choice >= ROOM_CHARACTER && (unsigned int)(choice - ROOM_CHARACTER) < room_text_length(characters)
+                       ? characters[choice - ROOM_CHARACTER]
+                       : 0;
+        if (key && !room_name_append(s->room_draft, key))
+            room_status(s, "Maximum 24 characters");
+    }
+}
 /* Blanks choice rows `from` on. */
 static void clear_choices(struct custom_state *s, int from) {
     for (int i = from; i < CHOICE_ROWS; i++)
@@ -998,7 +1126,7 @@ static void show(void *raw, int opening) {
     int old_selection = WORD(common(raw), COMMON_SELECTION);
     struct custom_state *s = state(raw);
     int doom = s->flow.page == CUSTOM_DOOM, theme = s->flow.page == CUSTOM_THEMES;
-    int room = s->flow.page == CUSTOM_ROOM_SENSORS;
+    int room = custom_rooms(s->flow.page);
     if (s->flow.page != CUSTOM_HOME && !doom && !theme && !room) {
         read_status(s->flow.page, s->status, sizeof(s->status));
         if (s->flow.page == CUSTOM_MATTER && !s->flow.action_failed &&
@@ -1032,12 +1160,7 @@ static void show(void *raw, int opening) {
         native_string_copy(&s->choices[0], "Done");
         clear_choices(s, 1);
     } else if (room) {
-        read_room_sensors(s->room_sensors, sizeof(s->room_sensors));
-        native_string_copy(&s->text[0], s->room_sensors);
-        native_string_copy(&s->text[1], "");
-        native_string_copy(&s->choices[0], "Back");
-        s->config.text_count = 1;
-        clear_choices(s, 1);
+        choice_count = layout_room_choices(s);
     } else if (theme) {
         native_string_copy(&s->text[0], s->flow.action_failed ? "nestlocal is unavailable. Try again."
                                                               : "The theme used on the home screen.");
@@ -1089,13 +1212,20 @@ static void show(void *raw, int opening) {
     s->config.choice_count = choice_count;
     void *base = common(raw);
     /* The choices' ids, as the stock menu names its rows. */
-    for (int i = 0; i < choice_count; i++)
-        s->choice_ids[i] = theme    ? (i < s->themes.count ? s->themes.ids[i] : "back")
+    for (int i = 0; i < choice_count; i++) {
+        if (room) {
+            s->room_choice_ids[i][0] = '0' + i / 10;
+            s->room_choice_ids[i][1] = '0' + i % 10;
+            s->room_choice_ids[i][2] = 0;
+        }
+        s->choice_ids[i] = room     ? s->room_choice_ids[i]
+                           : theme  ? (i < s->themes.count ? s->themes.ids[i] : "back")
                            : i == 0 ? "first"
                            : i == 1 ? "second"
                            : i == 2 ? "third"
                            : i == 3 ? "fourth"
                                     : "fifth";
+    }
     s->choice_ids[choice_count] = 0;
     PTR(base, COMMON_CHOICE_IDS) = s->choice_ids;
     WORD(base, COMMON_CHOICE_FIRST) = 0;
@@ -1131,7 +1261,21 @@ static int click(void *raw) {
     keeper_start(PTR(common(raw), COMMON_GLOBALS));
     int selected = (int)WORD(common(raw), COMMON_SELECTION);
     enum custom_page before = s->flow.page;
-    int result = custom_choose(&s->flow, selected, request_action, s);
+    int result = CHOOSE_STAY;
+    if (before == CUSTOM_ROOM_SENSOR_RENAME) {
+        edit_room_name(s, selected);
+    } else {
+        result = custom_choose(&s->flow, selected, request_action, s);
+        if (before == CUSTOM_ROOM_SENSORS && s->flow.page == CUSTOM_ROOM_SENSOR) {
+            const struct room_sensor_row *selected_room = &s->room_catalog.rows[s->flow.room_index];
+            room_copy(s->room_selected.id, selected_room->id, room_text_length(selected_room->id));
+            room_copy(s->room_selected.name, selected_room->name, room_text_length(selected_room->name));
+        }
+        if (s->flow.page == CUSTOM_ROOM_SENSOR_RENAME) {
+            room_copy(s->room_draft, s->room_selected.name, room_text_length(s->room_selected.name));
+            s->room_group = s->room_status[0] = s->room_pending = 0;
+        }
+    }
     if (s->flow.page != before && custom_activity(s->flow.page)) {
         s->activity_ticks = 0;
         s->activity_started = 0;
@@ -1148,9 +1292,28 @@ static void refresh_status(void *raw) {
     struct custom_state *s = state(raw);
     if (s->flow.page == CUSTOM_ROOM_SENSORS) {
         char text[sizeof(s->room_sensors)];
+        char catalog[ROOM_CATALOG_SIZE];
         read_room_sensors(text, sizeof(text));
-        if (!same_text(text, s->room_sensors))
+        read_room_catalog(catalog, sizeof(catalog));
+        if (!same_text(text, s->room_sensors) || !same_text(catalog, s->room_catalog.text))
             show(raw, 0);
+        return;
+    }
+    if (custom_rooms(s->flow.page)) {
+        if (s->room_pending) {
+            char status[sizeof(s->room_status) + ROOM_NAME_TOKEN_SIZE + 1];
+            read_text(RUN "room-sensor-name.status", status, sizeof(status), "");
+            const char *reply = room_name_reply(status, s->room_token);
+            if (reply && same_text(reply, "Saved")) {
+                s->room_pending = 0;
+                s->flow.page = CUSTOM_ROOM_SENSORS;
+                show(raw, 1);
+            } else if (reply || --s->room_pending == 0) {
+                s->room_pending = 0;
+                room_status(s, reply ? reply : "No response. Try again.");
+                show(raw, 0);
+            }
+        }
         return;
     }
     if (s->flow.page == CUSTOM_HOME || s->flow.page == CUSTOM_ZIGBEE_CONFIRM || s->flow.page == CUSTOM_MATTER_CONFIRM ||
@@ -1423,6 +1586,7 @@ static void enter_screen(void *screen) {
     s->active = 1;
     s->flow.page = s->flow.root;
     s->flow.action_failed = 0;
+    s->room_pending = 0;
     load_image(raw_layer(screen));
     native_screen_enter(screen);
     show(raw_layer(screen), 1);
@@ -1447,9 +1611,14 @@ static int screen_event(void *screen, void *event, void *target) {
 #endif
     /* Settings' inherited dispatcher sends EVENT_BACK for back navigation.
      * Consume it within a child page; the parent keeps the stock exit path. */
-    if (type == EVENT_BACK && custom_back(&state(raw)->flow)) {
-        show(raw, 1);
-        return 1;
+    if (type == EVENT_BACK) {
+        struct custom_state *s = state(raw);
+        if (s->room_pending)
+            return 1;
+        if (custom_back(&s->flow)) {
+            show(raw, 1);
+            return 1;
+        }
     }
     /* The third argument is the event destination. GetType may clobber r2;
      * forward the saved destination, including NULL for user input. */
