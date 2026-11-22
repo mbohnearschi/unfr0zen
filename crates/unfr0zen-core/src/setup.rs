@@ -2542,10 +2542,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires NLCLIENT_STOCK pointing to the researched firmware"]
     fn native_screen_patch_is_automatic_dry_run_safe_and_idempotent() {
         let original = scratch::name(crate::nlclient::ORIGINAL);
-        let source = std::fs::read(std::env::var("NLCLIENT_STOCK").expect("NLCLIENT_STOCK")).unwrap();
+        let path = std::env::var_os("NLCLIENT_STOCK")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::Path::new(env!("UNFR0ZEN_ROOT")).join(".work/firmware/nlclient-gen3-2025"));
+        let Ok(source) = std::fs::read(&path) else {
+            assert!(std::env::var_os("NLCLIENT_REQUIRE_GOLDENS").is_none(), "strict checks need the gen 3 sample");
+            eprintln!("No private stock sample: {}", path.display());
+            return;
+        };
         let mut volume = FakeVolume::new(stock());
         volume.files.insert(crate::nlclient::BINARY.into(), ("0:0".into(), 0o755, source));
         let changes = set_up(&mut volume, &options(), true).unwrap();
