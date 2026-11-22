@@ -2,7 +2,7 @@
 use super::{
     discovery,
     elf::{align, bytes, half, word, Elf},
-    linker, Patch,
+    linker, menu_expansion, Patch,
 };
 use crate::shell::sha256_hex;
 use crate::{device, Result};
@@ -15,7 +15,22 @@ fn hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02x}")).collect()
 }
 pub fn build(source: &[u8], object: &[u8], sections: &[super::menu::Section]) -> Result<Built> {
+    build_with_extra_entries(source, object, sections, &[])
+}
+
+/// Build a patch with dedicated Settings entries after the reused stock slots.
+/// The screen object's factory must recognize each supplied screen name.
+/// Dedicated entries require the reviewed US gen 3 6.5-14 executable.
+pub fn build_with_extra_entries(
+    source: &[u8],
+    object: &[u8],
+    sections: &[super::menu::Section],
+    extra_entries: &[&str],
+) -> Result<Built> {
     let discovery = discovery::discover(source)?;
+    if !extra_entries.is_empty() && discovery.stock_sha256 != menu_expansion::STOCK_SHA {
+        return device("expanded Settings menus require the reviewed US gen 3 6.5-14 executable");
+    }
     let elf = Elf::parse(source)?;
     let phoff = word(source, 28)? as usize;
     let stride = half(source, 42)? as usize;
@@ -78,7 +93,8 @@ pub fn build(source: &[u8], object: &[u8], sections: &[super::menu::Section]) ->
     for (_, _, factory_offset, _, branch) in &branches {
         output[*factory_offset..factory_offset + 4].copy_from_slice(&branch.to_le_bytes());
     }
-    let settings_menu = super::menu::arrange(source, &mut output, sections)?;
+    let settings_menu =
+        if extra_entries.is_empty() { Some(super::menu::arrange(source, &mut output, sections)?) } else { None };
     for bucket in ["device", "shared", "schedule"] {
         let slot = elf.offset(discovery.anchors[&format!("{bucket}_commit_slot")])?;
         let target = linked.symbols[&format!("custom_{bucket}_commit")];
@@ -115,6 +131,10 @@ pub fn build(source: &[u8], object: &[u8], sections: &[super::menu::Section]) ->
         5,
         0x10000,
     ]);
+    let settings_menu = match settings_menu {
+        Some(menu) => menu,
+        None => menu_expansion::install(&elf, &mut output, &mut headers, sections, extra_entries, linked.entry)?,
+    };
     for (index, header) in headers.iter().enumerate() {
         for (i, w) in header.iter().enumerate() {
             let at = phoff + index * stride + i * 4;

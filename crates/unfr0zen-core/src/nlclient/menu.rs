@@ -9,7 +9,8 @@
 //! rewritten in place and the loop's bound, an `add Rend, Rbase, #4*count`
 //! after the list's address is loaded, shortened to match. The slots past the
 //! bound keep valid names, since nlclient's lookup of a screen by name walks
-//! the whole list.
+//! the whole list. The reviewed 6.5-14 build can also extend the list and
+//! register dedicated screens.
 use super::{
     discovery,
     elf::{word, Elf},
@@ -90,7 +91,7 @@ pub fn arrange(source: &[u8], output: &mut [u8], sections: &[Section]) -> Result
 /// Rn holds the list's address, or the word before it, loaded from a literal
 /// (and on a position-independent build, added to pc) a few instructions
 /// before.
-fn bound(elf: &Elf, list: u32, count: usize) -> Result<u32> {
+pub(super) fn bound(elf: &Elf, list: u32, count: usize) -> Result<u32> {
     let mut found = Vec::new();
     for section in elf.sections.iter().filter(|s| s.kind == 1 && s.flags & 4 != 0) {
         let code = elf.contents(section);

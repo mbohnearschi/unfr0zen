@@ -194,7 +194,7 @@ pub(super) struct Registry {
     pub names: Vec<String>,
     pub code_first: bool,
 }
-fn registry(elf: &Elf) -> Result<Registry> {
+pub(super) fn registry(elf: &Elf) -> Result<Registry> {
     let mut best: Option<Registry> = None;
     for s in &elf.sections {
         if s.kind != 1 || s.flags & 7 != 3 {

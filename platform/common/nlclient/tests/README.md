@@ -44,6 +44,11 @@ exact bytes. Golden linking needs the object but no firmware. The full-stage
 checks need the original samples; strict mode fails if any baseline is missing.
 Ordinary public CI can check all three payloads without shipping firmware.
 
+The US 6.5-14 sample also exercises the expanded Settings list. The test
+adds two dedicated entries alongside all four existing integration entries.
+It checks the relocated screen registrations and loader relocations, and
+verifies the undo journal reproduces the stock executable.
+
 When `ld.lld` is present, a second test compares the Rust linker against
 `ld.lld -O0` using exactly the same object and bindings for all three variants.
 `NLCLIENT_REFERENCE_LLD` selects its path. This is an optional developer

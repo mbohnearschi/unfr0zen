@@ -501,6 +501,81 @@ fn without_features_the_settings_menu_and_its_loop_are_four_entries_shorter() {
     }
 }
 
+#[test]
+fn gen_3_settings_menu_registers_extra_entries_alongside_all_integrations() {
+    let Some(object) = object() else { return };
+    let firmware =
+        std::env::var_os("NLCLIENT_FIRMWARE_DIR").map(PathBuf::from).unwrap_or_else(|| root().join(".work/firmware"));
+    let Ok(stock) = std::fs::read(firmware.join("nlclient-gen3-6.5-14")) else { return };
+    let extra_entries = ["test_screen_one", "test_screen_two"];
+    let enabled = nlclient::menu::Section::ALL;
+    let built = nlclient::builder::build_with_extra_entries(&stock, &object, &enabled, &extra_entries).unwrap();
+    let names = built.manifest["settings_menu"]["names"].as_array().unwrap();
+    assert_eq!(names[1..5], ["account", "update", "proinfoscreen", "templock"]);
+    assert_eq!(names[5..7], extra_entries);
+    assert!(names.iter().any(|name| name == "remotecomfortscreen"));
+    assert!(built.manifest["factories"].get("remotecomfortscreen").is_none());
+
+    // Read the relocated tables through the load segments, as the runtime does.
+    let data = &built.output;
+    let phoff = w(data, 28) as usize;
+    let count = u16::from_le_bytes(data[44..46].try_into().unwrap()) as usize;
+    let headers = (0..count).map(|i| phoff + i * 32).collect::<Vec<_>>();
+    let loaded = |address| {
+        let header = headers
+            .iter()
+            .find(|&&h| w(data, h) == 1 && address >= w(data, h + 8) && address - w(data, h + 8) < w(data, h + 16))
+            .unwrap();
+        (w(data, header + 4) + address - w(data, header + 8)) as usize
+    };
+    let read = |address| w(data, loaded(address));
+    let name = |address| {
+        let data = &data[loaded(address)..];
+        std::str::from_utf8(&data[..data.iter().position(|byte| *byte == 0).unwrap()]).unwrap()
+    };
+    let menu = built.manifest["settings_menu"]["address"].as_u64().unwrap() as u32;
+    let registry = built.manifest["settings_menu"]["registry_address"].as_u64().unwrap() as u32;
+    let actual = (0..names.len()).map(|i| name(read(menu + i as u32 * 4))).collect::<Vec<_>>();
+    assert_eq!(actual, names.iter().map(|name| name.as_str().unwrap()).collect::<Vec<_>>());
+    let registrations = (0..128).map(|i| registry + i * 8).take_while(|&slot| read(slot) != 0).collect::<Vec<_>>();
+    let added = &registrations[registrations.len() - extra_entries.len()..];
+    assert_eq!(read(added[1] + 8), 0, "the new registrations precede the sentinel");
+
+    let dynamic = *headers.iter().find(|&&h| w(data, h) == 2).unwrap();
+    let offset = w(data, dynamic + 4) as usize;
+    let end = offset + w(data, dynamic + 16) as usize;
+    let tag = |n| (offset..end).step_by(8).find(|&at| w(data, at) == n).map(|at| w(data, at + 4)).unwrap();
+    let relative = loaded(tag(17));
+    let relative_count = tag(0x6fff_fffa) as usize;
+    let relocated = (relative..relative + relative_count * 8)
+        .step_by(8)
+        .map(|at| {
+            assert_eq!(w(data, at + 4), 23);
+            w(data, at)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for (index, (&slot, expected)) in added.iter().zip(extra_entries).enumerate() {
+        assert_eq!(read(slot), built.manifest["entry"].as_u64().unwrap() as u32);
+        assert_eq!(name(read(slot + 4)), expected);
+        assert!(relocated.contains(&(menu + (5 + index as u32) * 4)));
+        assert!(relocated.contains(&slot) && relocated.contains(&(slot + 4)));
+    }
+    assert_eq!(nlclient::Patch::parse(&built.journal).unwrap().apply(&built.output, true).unwrap(), stock);
+
+    let duplicate = nlclient::builder::build_with_extra_entries(&stock, &object, &enabled, &["temperature"]);
+    assert_eq!(duplicate.err().unwrap().to_string(), "duplicate Settings screen name temperature");
+
+    let mut changed = stock;
+    let discovery = nlclient::discovery::discover(&changed).unwrap();
+    let at = va(&changed, discovery.native_api["native_layer_ctor"]);
+    changed[at] ^= 1;
+    let unsupported = nlclient::builder::build_with_extra_entries(&changed, &object, &enabled, &extra_entries);
+    assert_eq!(
+        unsupported.err().unwrap().to_string(),
+        "expanded Settings menus require the reviewed US gen 3 6.5-14 executable"
+    );
+}
+
 /// The file offset of a virtual address, from the ELF's load segments.
 fn file_offset(elf: &[u8], address: u32) -> usize {
     let word = |at: usize| u32::from_le_bytes(elf[at..at + 4].try_into().unwrap());

@@ -8,6 +8,7 @@ mod elf;
 pub mod external_temperature;
 pub mod linker;
 pub mod menu;
+mod menu_expansion;
 pub mod theme;
 use crate::shell::sha256_hex;
 use crate::{device, Result};
