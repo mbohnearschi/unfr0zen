@@ -151,15 +151,15 @@ DECLARE_LAYOUT(TIMER_EVENT_SECOND);
 /* Bytes before the vptr in its vtable. */
 #define SCREEN_VTABLE_HEAD      8
 
-/* The drawing context's vtable: its size and slots. */
-#define CONTEXT_VTABLE_SIZE      0xc4
-#define CONTEXT_DRAW_TEXT_SLOT   0x30
-#define CONTEXT_DRAW_IMAGE_SLOT  0x50
-#define CONTEXT_DRAW_SCALED_SLOT 0x60
+/* The drawing context's vtable and the heading and image slots. */
+#define CONTEXT_VTABLE_SIZE       0xc4
+#define CONTEXT_DRAW_HEADING_SLOT 0x24
+#define CONTEXT_DRAW_IMAGE_SLOT   0x50
+#define CONTEXT_DRAW_SCALED_SLOT  0x60
 /* An image's vtable slot that destroys it. */
-#define IMAGE_DESTROY_SLOT       4
+#define IMAGE_DESTROY_SLOT        4
 /* The client's globals, which tells the stock client from another queue. */
-#define CLIENT_GLOBALS           0x70
+#define CLIENT_GLOBALS            0x70
 
 /* nlclient's events and their size. */
 #define EVENT_SIZE           0x10
@@ -1510,72 +1510,67 @@ static void title(void *screen) {
     enum custom_page root = state(raw_layer(screen))->flow.root;
     nl_string *heading = (nl_string *)((u8 *)screen + SCREEN_TITLE);
     if (root == CUSTOM_ROOM_SENSORS)
-        native_string_copy(heading, "\nROOM SENSORS");
+        native_string_copy(heading, "ROOM SENSORS");
     else
         integration_title(heading, root);
     native_string_copy((nl_string *)((u8 *)screen + SCREEN_SUBTITLE), "");
     native_rebuild_title(screen);
 }
-/* A copy of the drawing context's vtable whose text call lifts the title,
- * leaving the native context and transform as they are. */
-struct title_context {
+/* Shift the menu heading without moving the tile or the other screens. */
+struct heading_context {
     u8 vtable[CONTEXT_VTABLE_SIZE];
     void *original;
-    int y_offset;
+    int down;
 };
-static void subtitle_text(void *context, int x, int y, void *text, int count, int scale, int a, int b, int c) {
-    struct title_context *view = PTR(context, 0);
-    void (*draw_text)(void *, int, int, void *, int, int, int, int, int) = PTR(view->original, CONTEXT_DRAW_TEXT_SLOT);
-    draw_text(context, x, y - view->y_offset, text, count, scale, a, b, c);
+static void shifted_heading(void *context, int x, int y, void *text, int scale, int a, int b, int c) {
+    struct heading_context *view = PTR(context, 0);
+    void (*draw_heading)(void *, int, int, void *, int, int, int, int) = PTR(view->original, CONTEXT_DRAW_HEADING_SLOT);
+    draw_heading(context, x, y + view->down, text, scale, a, b, c);
 }
-/* How far the title rises over the menu glyph, in the gen 3's layout. */
-#define TITLE_LIFT      40
-/* The menu glyph: 80 px, centred this far above the tile's centre at the
- * menu's resting (half) scale; on the gen 1 and gen 2, 44/80 of it, lower. */
-#define GLYPH_SIZE      80
-#define GLYPH_Y         (-120)
-#define GEN2_GLYPH_SIZE 44
-#define GEN2_GLYPH_Y    (-71)
+/* Place the glyph's painted pixels above the heading with a compact gap.
+ * The image origins include the glyphs' transparent padding. */
+#define GLYPH_SIZE        80
+#define GLYPH_Y           (-65)
+#define HEADING_DOWN      10
+#define GEN2_GLYPH_SIZE   44
+#define GEN2_GLYPH_Y      (-39)
+#define GEN2_HEADING_DOWN 7
 static int screen_draw(void *screen, void *context) {
     void *globals = PTR(screen, SCREEN_GLOBALS);
-    struct title_context view;
     struct custom_state *s = state(raw_layer(screen));
-    int draw_glyph = !native_menu_hidden(globals) && s->flow.root != CUSTOM_ROOM_SENSORS;
-    if (draw_glyph) {
-        view.y_offset = (int)(SCALED(s, TITLE_LIFT) * native_menu_scale(globals));
-        view.original = PTR(context, 0);
-        bytes_copy(view.vtable, view.original, sizeof(view.vtable));
-        PTR(view.vtable, CONTEXT_DRAW_TEXT_SLOT) = subtitle_text;
-        PTR(context, 0) = view.vtable;
+    if (native_menu_hidden(globals) || s->flow.root == CUSTOM_ROOM_SENSORS)
+        return native_screen_draw(screen, context);
+    if (!s->menu_glyph) {
+        int error = 0;
+        enum custom_page root = s->flow.root;
+        s->menu_glyph = native_image_load(root == CUSTOM_ZIGBEE   ? ZIGBEE_GLYPH
+                                          : root == CUSTOM_MATTER ? MATTER_GLYPH
+                                          : root == CUSTOM_THEMES ? THEMES_GLYPH
+                                          : root == CUSTOM_DOOM   ? DOOM_GLYPH
+                                                                  : MENU_GLYPH,
+                                          &error);
     }
+    if (!s->menu_glyph)
+        return native_screen_draw(screen, context);
+
+    /* Native menu titles settle at half scale. The offsets describe both
+     * elements in screen pixels at rest and follow the menu animation. */
+    int gen3 = s->display >= GEN3_WIDTH;
+    float scale = native_menu_scale(globals) * 2;
+    struct heading_context view;
+    view.down = (int)((gen3 ? HEADING_DOWN : GEN2_HEADING_DOWN) * scale);
+    view.original = PTR(context, 0);
+    bytes_copy(view.vtable, view.original, sizeof(view.vtable));
+    PTR(view.vtable, CONTEXT_DRAW_HEADING_SLOT) = shifted_heading;
+    PTR(context, 0) = view.vtable;
     int result = native_screen_draw(screen, context);
-    if (draw_glyph)
-        PTR(context, 0) = view.original;
-    if (draw_glyph) {
-        if (!s->menu_glyph) {
-            int error = 0;
-            enum custom_page root = s->flow.root;
-            s->menu_glyph = native_image_load(root == CUSTOM_ZIGBEE   ? ZIGBEE_GLYPH
-                                              : root == CUSTOM_MATTER ? MATTER_GLYPH
-                                              : root == CUSTOM_THEMES ? THEMES_GLYPH
-                                              : root == CUSTOM_DOOM   ? DOOM_GLYPH
-                                                                      : MENU_GLYPH,
-                                              &error);
-        }
-        if (s->menu_glyph) {
-            /* Native menu titles settle at half scale; glyph coordinates
-             * describe the full 80px image at that resting size, as the
-             * gen 3's own glyphs are. The gen 1's and gen 2's are smaller and lower:
-             * 30px showing, centred 59px above the tile's centre. */
-            int gen3 = s->display >= GEN3_WIDTH;
-            float scale = native_menu_scale(globals) * 2;
-            float glyph = scale * (gen3 ? 1.0f : (float)GEN2_GLYPH_SIZE / GLYPH_SIZE);
-            draw_scaled_fn *draw_image = PTR(PTR(context, 0), CONTEXT_DRAW_SCALED_SLOT);
-            draw_image(context, (int)(-native_image_width(s->menu_glyph) * glyph / 2),
-                       (int)((gen3 ? GLYPH_Y : GEN2_GLYPH_Y) * scale), s->menu_glyph, native_style(globals),
-                       (int)(glyph * FIXED_ONE), (void *)0);
-        }
-    }
+    PTR(context, 0) = view.original;
+
+    float glyph = scale * (gen3 ? 1.0f : (float)GEN2_GLYPH_SIZE / GLYPH_SIZE);
+    draw_scaled_fn *draw_image = PTR(view.original, CONTEXT_DRAW_SCALED_SLOT);
+    draw_image(context, (int)(-native_image_width(s->menu_glyph) * glyph / 2),
+               (int)((gen3 ? GLYPH_Y : GEN2_GLYPH_Y) * scale), s->menu_glyph, native_style(globals),
+               (int)(glyph * FIXED_ONE), (void *)0);
     return result;
 }
 static void title_thunk(void *part) { title((u8 *)part - SCREEN_THIRD_THIS); }

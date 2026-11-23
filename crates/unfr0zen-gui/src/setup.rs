@@ -1232,7 +1232,7 @@ fn progress_ring(
     let c = rect.center();
     let r = size * 0.5 - 12.0;
     painter.circle_filled(c, r - 6.0, FACE);
-    painter.circle_filled(c - egui::vec2(0.0, 16.0), r * 0.62, FACE_LIGHT);
+    painter.circle_filled(c, r * 0.62, FACE_LIGHT);
     let start = -TAU / 4.0;
     let sweep = TAU;
     const WIDTH: f32 = 14.0;
@@ -1266,27 +1266,41 @@ fn progress_ring(
             ui.ctx().request_repaint();
         }
     }
-    painter.text(c - egui::vec2(0.0, 50.0), egui::Align2::CENTER_CENTER, label.to_uppercase(), medium(12.0), ACCENT);
-    let percent = fraction.is_some() && !big.is_empty();
-    let number = painter.layout_no_wrap(big.to_string(), crate::display(if percent { 72.0 } else { 54.0 }), TEXT);
-    let at = c - number.size() * 0.5 + egui::vec2(if percent { -10.0 } else { 0.0 }, 4.0);
-    let right = at.x + number.size().x;
-    // The digits' drawn top, which the percent sign's lines up with.
-    let digits_top = at.y + number.mesh_bounds.top();
-    painter.galley(at, number, TEXT);
-    if percent {
-        let sign = painter.layout_no_wrap("%".into(), crate::display(26.0), TEXT);
-        let y = digits_top - sign.mesh_bounds.top();
-        painter.galley(egui::pos2(right + 2.0, y), sign, TEXT);
+    let label = painter.layout_no_wrap(label.to_uppercase(), medium(12.0), ACCENT);
+    let label_size = label.mesh_bounds.size();
+    let paint = |left, top, galley: std::sync::Arc<egui::Galley>, color| {
+        let origin = egui::pos2(left, top) - galley.mesh_bounds.min.to_vec2();
+        painter.galley(origin, galley, color);
+    };
+    if big.is_empty() {
+        paint(c.x - label_size.x * 0.5, c.y - label_size.y * 0.5, label, ACCENT);
+        return;
     }
-    if !under.is_empty() {
-        painter.text(
-            c + egui::vec2(0.0, 52.0),
-            egui::Align2::CENTER_CENTER,
-            under,
-            egui::FontId::proportional(12.5),
-            MUTED,
-        );
+    let percent = fraction.is_some();
+    let number = painter.layout_no_wrap(big.to_string(), crate::display(if percent { 72.0 } else { 54.0 }), TEXT);
+    let digits = number.mesh_bounds.size();
+    let sign = percent.then(|| painter.layout_no_wrap("%".into(), crate::display(26.0), TEXT));
+    let under =
+        (!under.is_empty()).then(|| painter.layout_no_wrap(under.into(), egui::FontId::proportional(12.5), MUTED));
+    const LABEL_GAP: f32 = 20.0;
+    const SIGN_GAP: f32 = 2.0;
+    const UNDER_GAP: f32 = 12.0;
+    // Center what is painted, including the percent sign and any estimate.
+    let number_width = digits.x + sign.as_ref().map_or(0.0, |sign| SIGN_GAP + sign.mesh_bounds.width());
+    let height = label_size.y
+        + LABEL_GAP
+        + digits.y
+        + under.as_ref().map_or(0.0, |under| UNDER_GAP + under.mesh_bounds.height());
+    let top = c.y - height * 0.5;
+    paint(c.x - label_size.x * 0.5, top, label, ACCENT);
+    let digits_top = top + label_size.y + LABEL_GAP;
+    let digits_left = c.x - number_width * 0.5;
+    paint(digits_left, digits_top, number, TEXT);
+    if let Some(sign) = sign {
+        paint(digits_left + digits.x + SIGN_GAP, digits_top, sign, TEXT);
+    }
+    if let Some(under) = under {
+        paint(c.x - under.mesh_bounds.width() * 0.5, digits_top + digits.y + UNDER_GAP, under, MUTED);
     }
 }
 
@@ -1402,6 +1416,43 @@ fn next_card(ui: &mut egui::Ui, number: usize, title: &str, about: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_ring_centers_the_face_and_painted_text() {
+        let context = egui::Context::default();
+        crate::install_fonts(&context);
+        for (fraction, big, under, failed) in [
+            (None, "0:23", "", false),
+            (Some(0.0), "", "", false),
+            (Some(0.99), "99", "2 minutes left", false),
+            (None, "!", "", true),
+        ] {
+            let output = context.run_ui(egui::RawInput::default(), |ui| {
+                progress_ring(ui, 260.0, fraction, "Setting up", big, under, failed);
+            });
+            let circle = |color| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|entry| match &entry.shape {
+                        egui::Shape::Circle(circle) if circle.fill == color => Some(circle.center),
+                        _ => None,
+                    })
+                    .expect("a filled circle")
+            };
+            let center = circle(FACE);
+            assert_eq!(circle(FACE_LIGHT), center);
+            let text = output
+                .shapes
+                .iter()
+                .filter_map(|entry| match &entry.shape {
+                    egui::Shape::Text(text) => Some(text.galley.mesh_bounds.translate(text.pos.to_vec2())),
+                    _ => None,
+                })
+                .fold(egui::Rect::NOTHING, |bounds, text| bounds.union(text));
+            assert!(text.center().distance(center) < 0.5, "{big:?}: {text:?} around {center:?}");
+        }
+    }
 
     #[test]
     fn a_password_shows_only_while_its_eye_is_on() {
