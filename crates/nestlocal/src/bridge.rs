@@ -680,13 +680,13 @@ impl Bridge {
             add("binary_sensor", key, name, c);
         };
         if can_heat {
-            binary("heating", "Heating", "heat", Fields::new());
+            binary("heating", "Heating", "", fields! {"icon" => "mdi:fire"});
         }
         if can_cool {
-            binary("cooling", "Cooling", "cold", Fields::new());
+            binary("cooling", "Cooling", "", fields! {"icon" => "mdi:snowflake"});
         }
         if has_fan {
-            binary("fan_running", "Fan", "running", Fields::new());
+            binary("fan_running", "Fan running", "", fields! {"icon" => "mdi:fan"});
         }
         for (key, name) in wired_stages(dev) {
             binary(key, name, "running", Fields::new());
@@ -1571,6 +1571,25 @@ pub mod tests {
                     "fan_duty_end_time": 82800, "temperature_scale": "C"})),
             obj(json!({"can_heat": true, "can_cool": true, "target_temperature_type": "range"})),
         )
+    }
+
+    #[test]
+    fn hvac_activity_discovery_uses_on_and_off_labels() {
+        let b = test_bridge();
+        let (mut dev, sh) = everything();
+        b.announce(&dev, &sh, &[], false);
+        let configs = b.announced.lock().unwrap().clone().unwrap();
+        for key in ["heating", "cooling", "fan_running"] {
+            let topic = format!("homeassistant/binary_sensor/nestlocal_s/{key}/config");
+            let config: Value = serde_json::from_str(&configs[&topic]).unwrap();
+            assert!(config.get("device_class").is_none(), "{key} should display On and Off");
+            assert!(config.get("command_topic").is_none());
+            assert_eq!(config["value_template"], json!(format!("{{{{ 'ON' if value_json.{key} else 'OFF' }}}}")));
+        }
+        dev.insert("has_fan".into(), false.into());
+        b.announce(&dev, &sh, &[], false);
+        let configs = b.announced.lock().unwrap();
+        assert!(!configs.as_ref().unwrap().contains_key("homeassistant/binary_sensor/nestlocal_s/fan_running/config"));
     }
 
     #[test]
