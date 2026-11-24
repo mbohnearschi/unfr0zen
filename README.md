@@ -15,6 +15,37 @@ Local control over MQTT, Matter (Wi-Fi, Thread) or Zigbee, no Google cloud neede
 
 </div>
 
+## Features in this fork
+
+- **Weekly schedule editor for Home Assistant.** View and edit the Nest’s
+  Heat, Cool and Heat • Cool schedules over MQTT, including inactive modes.
+  The card uses 24-hour time, supports explicit midnight setpoints and
+  separate heating and cooling targets, and confirms saves against the
+  thermostat’s stored schedule.
+  [Home Assistant card](integrations/home-assistant/nest-schedule-card.js)
+- **Preserved Nest Temperature Sensor pairings.** Installs and reinstalls
+  retain existing pairings on 3rd generation thermostats.
+- **Room Sensors on the thermostat.** On the reviewed US 6.5-14 firmware,
+  Settings → Room Sensors shows paired sensors, their latest readings and
+  reading ages, and which sensor is controlling the HVAC. Rename a sensor
+  with the ring to update its label in Room Sensors, Quick View and Sensor
+  Schedule. Custom names survive reinstalls.
+- **Individual room temperatures in Home Assistant.** MQTT discovery exposes
+  each paired Nest sensor under its custom name. Renaming a sensor keeps its
+  entity ID and history.
+- **Matter commissioning over IP by default.** Pair over the local network
+  with a compatible Matter controller so Nest can keep using Bluetooth for
+  its temperature sensors.
+- **On/off HVAC activity in Home Assistant.** Read-only MQTT binary sensors
+  show when heating, cooling and the fan are running. Fan activity follows
+  the thermostat’s fan output, including during heating and cooling.
+- **Expanded thermostat Settings menu.** On supported firmware, the menu can
+  hold more than four custom feature entries, giving Room Sensors its own tile
+  alongside other installed features.
+- **Centered setup and thermostat UI.** The installer’s setup readout sits
+  inside the progress ring, and custom thermostat tiles center their labels
+  and icons as a group.
+
 > [!CAUTION]
 > **This rewrites the flash of the device that runs your heating.** A failed run
 > or a bad setup can leave the thermostat unbootable, or running without
@@ -58,9 +89,9 @@ in to Home Assistant on your own network.
 <sub>No other model is supported: not the Nest Thermostat E, any other Nest thermostat, or another make.</sub>
 
 - **External temperature:** the thermostat regulates from a temperature you send
-  it over MQTT, Matter or Zigbee (any thermometer in Home Assistant). Official
-  Nest Temperature Sensors are not supported: on the 3rd generation the option
-  turns Bluetooth off, and the 1st and 2nd generation never had them.
+  it over MQTT, Matter or Zigbee (any thermometer in Home Assistant). On the
+  3rd generation this option turns Bluetooth off. Keep it disabled to receive
+  readings from paired Nest Temperature Sensors.
 - **1st generation:** it has to be opened up to reach USB download mode: see the
   [install guide](https://unfr0zen.com/install/#gen1). It has no Zigbee, no
   Matter over Thread and no USB shell.
