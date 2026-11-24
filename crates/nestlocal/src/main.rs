@@ -28,6 +28,7 @@ mod network;
 mod nlsettings;
 mod occupancy;
 mod package;
+mod schedule;
 mod scratch;
 mod screen;
 mod sensor;
@@ -335,6 +336,7 @@ async fn run(config: flags::Config) {
         let (broker, tls) =
             mqtttls::broker(&config.mqtt, config.mqtt_tls, &config.mqtt_ca).unwrap_or_else(|e| fatal!("{e}"));
         bridge.run(&broker, &config.mqtt_user, &password, tls);
+        tokio::spawn(schedule::watch(bridge.clone(), std::path::Path::new(schedule::RECOVERY_FILE)));
         broker_port = Some(broker.port);
     }
     if config.zigbee {

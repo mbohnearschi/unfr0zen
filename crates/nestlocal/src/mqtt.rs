@@ -43,7 +43,7 @@ pub trait Handler: Send + Sync + 'static {
     /// Connected (again): subscribe and publish the state.
     fn connected(&self);
     /// A message on a subscribed topic.
-    fn message(&self, topic: &str, payload: &[u8]);
+    fn message(&self, topic: &str, payload: &[u8], retained: bool);
 }
 
 /// A broker URL: tcp:// or mqtt:// in the clear, ssl://, tls:// or
@@ -351,7 +351,7 @@ impl Connection {
                                 wr.write_all(&[0x40, 2, (id >> 8) as u8, id as u8]).await?;
                                 self.sent.store(unix_now(), Ordering::Relaxed);
                             }
-                            handler.message(&topic, &payload);
+                            handler.message(&topic, &payload, header & 1 != 0);
                         }
                     }
                 }
@@ -635,7 +635,7 @@ pub mod tests {
         fn connected(&self) {
             self.connected.store(true, Ordering::Relaxed);
         }
-        fn message(&self, topic: &str, payload: &[u8]) {
+        fn message(&self, topic: &str, payload: &[u8], _retained: bool) {
             self.messages.lock().unwrap().push((topic.into(), payload.to_vec()));
         }
     }

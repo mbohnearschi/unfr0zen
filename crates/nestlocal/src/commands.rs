@@ -14,7 +14,7 @@ use crate::weather::HAWeather;
 const TOUCHED_BY_LOCAL: i64 = 4;
 
 /// Setpoints, °C.
-const SETPOINT: (f64, f64) = (4.5, 35.0);
+pub(crate) const SETPOINT: (f64, f64) = (4.5, 35.0);
 /// Eco's heat and cool limits, °C: what the commands take and Home
 /// Assistant's number entities offer.
 pub const ECO_LOW: (f64, f64) = (4.5, 21.0);

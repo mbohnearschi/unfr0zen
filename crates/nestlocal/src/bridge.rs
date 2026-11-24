@@ -9,6 +9,9 @@
 //!                                      (retained, will)
 //!   <prefix>/<serial>/state            the computed state (retained)
 //!   <prefix>/<serial>/raw/<bucket>     each bucket, whole (retained)
+//!   <prefix>/<serial>/schedule/<mode> each saved weekly schedule (retained)
+//!   <prefix>/<serial>/schedule       schedule dashboard state (retained)
+//!   <prefix>/<serial>/set/schedule   edit one day of a saved schedule
 //!   <prefix>/<serial>/set/<command>    Home Assistant's commands
 //!   <prefix>/<serial>/set/raw/<bucket> merge a JSON object into a bucket
 //!                                      (anything the entities don't cover)
@@ -36,6 +39,7 @@ use crate::logf;
 use crate::mqtt;
 use crate::naming::{Names, Naming};
 use crate::occupancy::Occupancy;
+use crate::schedule::{self, Dashboard, Schedules};
 use crate::sensor::room_sensors::Reading;
 use crate::store::{Object, Store};
 use crate::weather::Outdoor;
@@ -69,6 +73,8 @@ pub struct Bridge {
     /// The unit's wakes since nestlocal started (wake.rs).
     wakes: AtomicU64,
     room_sensors: Mutex<Vec<Reading>>,
+    schedules: Mutex<Dashboard>,
+    pub(crate) schedule_edit: tokio::sync::Mutex<()>,
     announced: Mutex<Option<BTreeMap<String, String>>>, // discovery topic -> config last published
     naming: Mutex<Naming>,
     /// The entities are removed, waiting out RENAME_WAIT.
@@ -108,6 +114,8 @@ impl Bridge {
             mqtt: OnceLock::new(),
             wakes: AtomicU64::new(0),
             room_sensors: Mutex::new(Vec::new()),
+            schedules: Mutex::new(Dashboard::default()),
+            schedule_edit: tokio::sync::Mutex::new(()),
             announced: Mutex::new(None),
             naming: Mutex::new(naming),
             renaming: AtomicBool::new(false),
@@ -206,6 +214,67 @@ impl Bridge {
         self.publish_state();
     }
 
+    pub(crate) fn set_schedules(&self, schedules: Schedules) {
+        let first = {
+            let mut dashboard = self.schedules.lock().unwrap();
+            let first = dashboard.schedules.is_none();
+            self.publish_schedules(&schedules, dashboard.schedules.as_ref());
+            dashboard.schedules = Some(schedules);
+            first
+        };
+        self.publish_schedule_dashboard(false);
+        if first {
+            self.publish_state();
+        }
+    }
+
+    pub(crate) fn active_schedule(&self) -> Option<&'static str> {
+        let shared = self.store.get(&format!("shared.{}", self.serial))?;
+        schedule::active_mode(shared.value.get("target_temperature_type")?.as_str()?)
+    }
+
+    pub(crate) fn set_schedule_result(&self, result: Value) {
+        self.schedules.lock().unwrap().result = Some(result);
+        self.publish_schedule_dashboard(false);
+    }
+
+    fn publish_schedule_dashboard(&self, replay: bool) {
+        let mut dashboard = self.schedules.lock().unwrap();
+        let Some(schedules) = dashboard.schedules.as_ref() else { return };
+        let active = self.active_schedule();
+        let mut edit_revisions = BTreeMap::new();
+        if let (Some(active), Some(bucket)) = (active, self.store.get(&format!("schedule.{}", self.serial))) {
+            for (&mode, saved) in schedules {
+                if schedule::edit::editable(&bucket.value, mode, active) {
+                    edit_revisions.insert(mode, schedule::revision(saved));
+                }
+            }
+        }
+        let payload = serde_json::json!({
+            "mode": active,
+            "topic": self.base,
+            "edit_revision": active.and_then(|mode| edit_revisions.get(mode)),
+            "edit_revisions": edit_revisions,
+            "schedules": schedules,
+            "last_edit": dashboard.result,
+        })
+        .to_string();
+        if replay || dashboard.published.as_ref() != Some(&payload) {
+            self.publish(&format!("{}/schedule", self.base), true, payload.as_bytes());
+            dashboard.published = Some(payload);
+        }
+    }
+
+    fn publish_schedules(&self, schedules: &Schedules, previous: Option<&Schedules>) {
+        for mode in schedule::TOPICS {
+            let value = schedules.get(mode);
+            if previous.is_none_or(|previous| previous.get(mode) != value) {
+                let payload = value.map(Value::to_string).unwrap_or_default();
+                self.publish(&format!("{}/schedule/{mode}", self.base), true, payload.as_bytes());
+            }
+        }
+    }
+
     /// Connects to the broker, and from then on publishes every change and
     /// takes Home Assistant's commands.
     pub fn run(
@@ -298,6 +367,10 @@ impl Bridge {
         for o in self.store.all() {
             self.publish_raw(&o);
         }
+        if let Some(schedules) = self.schedules.lock().unwrap().schedules.as_ref() {
+            self.publish_schedules(schedules, None);
+        }
+        self.publish_schedule_dashboard(true);
         self.publish_state_and_discovery(true);
         self.publish_update();
     }
@@ -364,6 +437,9 @@ impl Bridge {
 
     fn changed(&self, o: &Object) {
         self.publish_raw(o);
+        if o.key == format!("schedule.{}", self.serial) || o.key == format!("shared.{}", self.serial) {
+            self.publish_schedule_dashboard(false);
+        }
         self.publish_state();
     }
 
@@ -924,6 +1000,21 @@ impl Bridge {
                 "icon" => "mdi:calendar-remove",
             },
         );
+        if self.schedules.lock().unwrap().schedules.is_some() {
+            let topic = format!("{}/schedule", self.base);
+            add(
+                "sensor",
+                "weekly_schedule",
+                "Weekly schedule",
+                fields! {
+                    "state_topic" => topic.clone(),
+                    "value_template" => "{{ value_json.mode or 'off' }}",
+                    "json_attributes_topic" => topic,
+                    "icon" => "mdi:calendar-clock",
+                    "entity_category" => "diagnostic",
+                },
+            );
+        }
         if let Some(themes) = self.themes.get() {
             // Its options follow the themes folder: a theme added or removed
             // announces it again.
@@ -1014,8 +1105,16 @@ impl mqtt::Handler for Bridge {
     fn connected(&self) {
         Bridge::connected(self);
     }
-    fn message(&self, topic: &str, payload: &[u8]) {
-        Bridge::message(self, topic, payload);
+    fn message(&self, topic: &str, payload: &[u8], retained: bool) {
+        if topic == format!("{}/set/schedule", self.base) {
+            if !retained {
+                if let (Some(bridge), Ok(edit)) = (self.me.upgrade(), serde_json::from_slice(payload)) {
+                    tokio::spawn(schedule::edit::save(bridge, edit));
+                }
+            }
+        } else {
+            Bridge::message(self, topic, payload);
+        }
     }
 }
 
@@ -1788,6 +1887,58 @@ pub mod tests {
             }
         };
         tokio::time::timeout(Duration::from_secs(5), read).await.expect("no such publish")
+    }
+
+    #[tokio::test]
+    async fn schedule_topics_are_retained_and_replayed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let b = test_bridge();
+        b.store.merge("device.S", &fields! {"temperature_scale" => "C"}, 0, 0, true);
+        b.store.merge("shared.S", &fields! {"target_temperature_type" => "heat"}, 0, 0, true);
+        let broker = mqtt::Broker::parse(&format!("tcp://{}", listener.local_addr().unwrap())).unwrap();
+        let schedules = Schedules::from([
+            ("heat", json!({"mode":"heat","days":{"monday":[{"time":"07:00:00","temperature_c":21.0}]}})),
+            ("cool", json!({"mode":"cool","days":{"monday":[]}})),
+            ("heat_cool", json!({"mode":"heat_cool","days":{"monday":[]}})),
+        ]);
+        b.set_schedules(schedules.clone());
+        b.run(&broker, "", "", None);
+        let (mut conn, _) = listener.accept().await.unwrap();
+        let mut buf = bytes::BytesMut::new();
+        crate::mqtt::tests::read_packet(&mut conn, &mut buf).await;
+        tokio::io::AsyncWriteExt::write_all(&mut conn, &[0x20, 2, 0, 0]).await.unwrap();
+
+        for mode in schedule::TOPICS {
+            let topic = format!("nestlocal/S/schedule/{mode}");
+            let (_, payload, retained) = published(&mut conn, &mut buf, |t, _| t == topic).await;
+            assert!(retained);
+            assert_eq!(serde_json::from_slice::<Value>(&payload).unwrap(), schedules[mode]);
+        }
+        let (_, payload, retained) = published(&mut conn, &mut buf, |t, _| t == "nestlocal/S/schedule").await;
+        assert!(retained);
+        let dashboard: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(dashboard["mode"], "heat");
+        assert_eq!(dashboard["schedules"], json!(schedules));
+        assert!(dashboard["edit_revision"].is_null());
+        let (_, discovery, _) = published(&mut conn, &mut buf, |topic, _| {
+            topic == "homeassistant/sensor/nestlocal_s/weekly_schedule/config"
+        })
+        .await;
+        let discovery: Value = serde_json::from_slice(&discovery).unwrap();
+        assert_eq!(discovery["json_attributes_topic"], "nestlocal/S/schedule");
+
+        let mut updated = schedules;
+        updated.remove("cool");
+        b.set_schedules(updated);
+        let (_, payload, retained) = published(&mut conn, &mut buf, |t, _| t == "nestlocal/S/schedule/cool").await;
+        assert!(retained && payload.is_empty());
+        b.set_schedule_result(json!({"request_id": "abc", "status": "saved"}));
+        let (_, payload, _) = published(&mut conn, &mut buf, |t, p| {
+            t == "nestlocal/S/schedule" && p.windows(3).any(|window| window == b"abc")
+        })
+        .await;
+        let dashboard: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(dashboard["last_edit"]["status"], "saved");
     }
 
     #[test]

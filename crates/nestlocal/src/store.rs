@@ -151,6 +151,47 @@ impl Store {
         true
     }
 
+    /// Offer an edit to a current nlclient subscription without recording it
+    /// as applied. The caller can confirm an active edit after nlclient saves it.
+    pub fn offer(&self, expected: &Object, fields: Fields) -> Result<Object, &'static str> {
+        let inner = self.inner.lock().unwrap();
+        let current = inner.objects.get(&expected.key).ok_or("The thermostat has not reported its schedule yet.")?;
+        if current.revision != expected.revision || current.timestamp != expected.timestamp {
+            return Err("The schedule changed on the Nest. Reopen the day and try again.");
+        }
+        let mut proposal = current.clone();
+        proposal.value.extend(fields.into_iter().map(|(key, value)| (key, canonical(value))));
+        proposal.revision += 1;
+        proposal.timestamp = now_ms().max(current.timestamp + 1);
+        let mut offered = false;
+        for sub in inner.subs.values() {
+            offered |= sub.try_send(vec![proposal.clone()]).is_ok();
+        }
+        if offered {
+            Ok(proposal)
+        } else {
+            Err("The Nest is not listening for changes. Try again when it is awake.")
+        }
+    }
+
+    /// Record a verified offer when the device's recovery file is the only
+    /// acknowledgement. A newer device report takes precedence.
+    pub fn confirm_offer(&self, previous: &Object, proposal: Object) {
+        let watch = {
+            let mut inner = self.inner.lock().unwrap();
+            let Some(current) = inner.objects.get_mut(&previous.key) else { return };
+            if current.revision != previous.revision || current.timestamp != previous.timestamp {
+                return;
+            }
+            *current = proposal.clone();
+            inner.watch.clone()
+        };
+        self.dirty.notify_one();
+        for watcher in watch {
+            watcher(&proposal);
+        }
+    }
+
     /// Server-side changes, for a held subscribe, until the subscription is
     /// dropped.
     pub fn subscribe(self: &Arc<Self>) -> (mpsc::Receiver<Vec<Object>>, Subscription) {
@@ -218,6 +259,20 @@ pub mod tests {
         assert!(!changed && o.revision == 1);
         let (o, changed) = s.merge("device.S", &fields! {"t" => 21}, 7, 1234, true);
         assert!(changed && o.revision == 7 && o.timestamp == 1234 && o.value["t"] == json!(21));
+    }
+
+    #[test]
+    fn confirming_an_offer_keeps_a_newer_device_report() {
+        let store = temp_store();
+        let (before, _) = store.merge("schedule.S", &fields! {"name" => "before"}, 0, 0, true);
+        let (mut offers, _subscription) = store.subscribe();
+        let offered = store.offer(&before, fields! {"name" => "offered"}).unwrap();
+        assert_eq!(offers.try_recv().unwrap()[0].value, offered.value);
+        let (newer, _) =
+            store.merge("schedule.S", &fields! {"name" => "from the Nest"}, offered.revision, offered.timestamp, true);
+        store.confirm_offer(&before, offered);
+        assert_eq!(store.get("schedule.S").unwrap().value, newer.value);
+        assert!(offers.try_recv().is_err());
     }
 
     #[test]

@@ -100,6 +100,7 @@
             <h3>Entities</h3>
             <p>With Nest Temperature Sensors paired to a 3rd generation thermostat, Home Assistant discovers a temperature entity for each sensor under the thermostat's MQTT device. Each uses the name from <b>Settings → Room Sensors</b> and shows that sensor's own last reading. Renaming a sensor on the thermostat updates the discovery name and keeps its entity ID and history.</p>
             <p>The climate entity shows the HVAC mode, fan mode, action and setpoints. With the Eco preset active, it shows the enabled Eco limits for the current mode. Clearing the preset restores the regular setpoints.</p>
+            <p>The <a href="/protocols/#mqtt-schedules">weekly temperature schedules</a> are available as JSON on <code>nestlocal/+/schedule/+</code>. Home Assistant also discovers a <b>Weekly schedule</b> sensor with the data for all three modes.</p>
             <p>The read-only <b>Heating</b>, <b>Cooling</b> and <b>Fan running</b> indicators show On or Off for the equipment the Nest controls. Fan running follows the thermostat's fan output, including during heating or cooling.</p>
             <ul class="chips">
                 <li>Eco and the eco temperatures</li><li>Humidity</li><li>Target humidity</li><li>Occupancy</li><li>°C/°F</li><li>Backplate temperature</li><li>Battery</li><li>Fan and its timer</li><li>Fan schedule: on/off, minutes per hour, start and end hours</li><li>Auto-Schedule</li><li>Home/Away Assist</li><li>Sunblock</li><li>Early-On</li><li>Eco heat and cool limits</li><li>Leaf, Early-On, Sunblock, safety shutoff and filter indicators</li><li>Each wired HVAC stage running</li><li>Time to temperature</li><li>Filter runtime</li><li>IP address</li><li>MQTT reconnects, MQTT last disconnect and wakes (diagnostic)</li><li>Wi-Fi signal</li><li>Screen timeout and always on</li><li>Screen brightness and auto</li><li>Wake screen</li><li>Clear schedule</li>
@@ -108,6 +109,16 @@
             <ul class="chips">
                 <li>Filter reminder and its reset</li><li>Hot water state, schedule and boost</li><li>Humidifier and dehumidifier state</li><li>Humidity control</li>
             </ul>
+            <h3>Nest schedule card</h3>
+            <ol>
+                <li>Copy <code>integrations/home-assistant/nest-schedule-card.js</code> from the unfr0zen repository into Home Assistant's <code>config/www/</code> directory.</li>
+                <li>In Home Assistant, register <code>/local/nest-schedule-card.js</code> as a JavaScript module under <b>Settings → Dashboards → Resources</b>.</li>
+                <li>Add a Manual card using the configuration below. Replace the example entity with the <b>Weekly schedule</b> sensor on your MQTT thermostat device.</li>
+            </ol>
+<pre><code>type: custom:nest-schedule-card
+entity: sensor.nestlocal_0123456789abcdef_weekly_schedule</code></pre>
+            <p>Select Heat, Cool or Heat • Cool and choose a weekday. <b>Edit</b> opens the saved schedule for that day. Change <b>Starts at midnight</b> to schedule an explicit midnight target, or select <b>Use previous day’s target</b> to carry over the preceding day. For other setpoints, enter the time in separate <b>Hour</b> (00–23) and <b>Minute</b> (00–59) fields. Heat • Cool has separate heating and cooling targets. <b>Save</b> sends the selected day to the Nest and waits for confirmation from its saved schedule.</p>
+
             <h3>Updates</h3>
             <p>An <b>unfr0zen</b> update entity shows the version the thermostat runs and, when it can reach GitHub, the latest release, checked every 6 hours. <b>Install</b> downloads that release's package for the thermostat, <code>unfr0zen-&lt;device&gt;-&lt;version&gt;.ota</code> (the same one Matter and Zigbee install), checks its bundle against its manifest and unfr0zen's release key, installs it and restarts the thermostat; the thermostat stays awake until then. Only official releases install, and never one older than the installed version, unless <b>Allow unsigned updates</b> was on when the unit was set up. A unit set up without the update engine shows the versions; update it with the app. An install that fails says why in the thermostat's log and leaves it running; one that does not come back after the restart is fixed by setting it up again with the app over USB.</p>
             <p>A thermostat that can't reach GitHub installs a release's package (<code>unfr0zen-diamond3-&lt;version&gt;.ota</code>, from the release's assets) from your own network: put it on any web server the thermostat reaches and publish its URL, for example from a Home Assistant script:</p>
